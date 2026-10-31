@@ -1,0 +1,2613 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIG & API
+// ═══════════════════════════════════════════════════════════════════════════════
+const API_BASE = "http://localhost:3000/api/v1";
+const getToken  = () => localStorage.getItem("jwt_token");
+const setToken  = (t) => localStorage.setItem("jwt_token", t);
+const clearToken= () => localStorage.removeItem("jwt_token");
+
+async function api(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${path}`, {
+    method, headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.message || `Erreur ${res.status}`);
+  return json;
+}
+const GET    = (p)    => api("GET",    p);
+const POST   = (p, b) => api("POST",   p, b);
+const PUT    = (p, b) => api("PUT",    p, b);
+const DELETE = (p)    => api("DELETE", p);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HOOK RESPONSIVE
+// ═══════════════════════════════════════════════════════════════════════════════
+function useBreakpoint() {
+  const [w, setW] = useState(window.innerWidth);
+  useEffect(() => {
+    const fn = () => setW(window.innerWidth);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+  return {
+    isMobile:  w < 640,
+    isTablet:  w >= 640 && w < 1024,
+    isDesktop: w >= 1024,
+    isWide:    w >= 1440,
+    w,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════════════════════════
+const fmt = (n) => (parseFloat(n)||0).toFixed(2).replace(".",",") + " €";
+const fmtShort = (n) => n >= 1000 ? (n/1000).toFixed(1).replace(".",",")+"k €" : fmt(n);
+
+const PAYMENT_METHODS = [
+  { key:"card",      label:"Carte bancaire", icon:"💳", color:"#6366f1" },
+  { key:"cash",      label:"Espèces",        icon:"💵", color:"#10b981" },
+  { key:"treatwell", label:"Treatwell",      icon:"🌿", color:"#8b5cf6" },
+  { key:"planity",   label:"Planity",        icon:"📅", color:"#f59e0b" },
+];
+
+const NAV_ITEMS = [
+  { id:"encaissement",      label:"Encaissement",      icon:"⊞" },
+  { id:"prestations",       label:"Prestations",       icon:"✦" },
+  { id:"categories",        label:"Catégories",        icon:"◈" },
+  { id:"clients",           label:"Clients",           icon:"◉" },
+  { id:"employes",          label:"Employés",          icon:"⟡" },
+  { id:"depenses",          label:"Dépenses",          icon:"◻" },
+  { id:"recettes",          label:"Recettes",          icon:"◑" },
+  { id:"rapport-journalier",label:"Rapport journalier",icon:"◷" },
+  { id:"rapport-mensuel",   label:"Rapport mensuel",   icon:"▦" },
+  { id:"rapport-annuel",    label:"Rapport annuel",    icon:"▣" },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPOSANTS RÉUTILISABLES
+// ═══════════════════════════════════════════════════════════════════════════════
+function Toast({ msg, type="error", onClose }) {
+  useEffect(() => { const t = setTimeout(onClose, 3500); return () => clearTimeout(t); }, []);
+  const bg = type==="error" ? "#f87171" : type==="success" ? "#10b981" : "#f0c987";
+  return (
+    <div style={{ position:"fixed", bottom:28, right:28, zIndex:300, background:bg, color:"#0a0d14",
+      padding:"14px 22px", borderRadius:12, fontWeight:700, fontSize:15,
+      boxShadow:"0 4px 24px rgba(0,0,0,0.5)", maxWidth:360 }}>
+      {msg}
+    </div>
+  );
+}
+
+function Spinner({ size=28, color="#f0c987" }) {
+  return <div className="spinner" style={{ width:size, height:size, borderRadius:"50%",
+    border:`3px solid ${color}22`, borderTopColor:color, flexShrink:0 }} />;
+}
+
+function EmptyState({ icon="◈", text="Aucun résultat" }) {
+  return (
+    <div style={{ textAlign:"center", padding:"60px 24px", color:"#334155" }}>
+      <div style={{ fontSize:44, marginBottom:14, opacity:0.4 }}>{icon}</div>
+      <div style={{ fontSize:16 }}>{text}</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════════════════════════
+function LoginScreen({ onLogin }) {
+  const [email, setEmail]       = useState("admin@salon.com");
+  const [password, setPassword] = useState("admin123");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState("");
+  const { isMobile }            = useBreakpoint();
+
+  const handleLogin = async () => {
+    setLoading(true); setError("");
+    try {
+      const res = await POST("/auth/login", { email, password });
+      setToken(res.data.token);
+      onLogin(res.data.user);
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#0a0d14", display:"flex",
+      alignItems:"center", justifyContent:"center", padding:16 }}>
+      <div style={{ background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.09)",
+        borderRadius:22, padding: isMobile ? "32px 22px" : "52px 48px",
+        width:"100%", maxWidth:440 }}>
+        <div style={{ fontSize:isMobile?26:30, fontWeight:900, letterSpacing:"0.18em",
+          background:"linear-gradient(90deg,#f0c987,#e8a44e)",
+          WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", marginBottom:6 }}>LIME SAS</div>
+        <div style={{ fontSize:15, color:"#64748b", marginBottom:36 }}>L'Instant Beauté · Connexion</div>
+
+        {error && <div style={{ background:"rgba(248,113,113,0.15)", border:"1px solid rgba(248,113,113,0.3)",
+          borderRadius:10, padding:"12px 16px", fontSize:14, color:"#f87171", marginBottom:20 }}>{error}</div>}
+
+        {[["Email",email,setEmail,"email"],["Mot de passe",password,setPassword,"password"]].map(([lbl,val,set,type]) => (
+          <div key={lbl} style={{ marginBottom:16 }}>
+            <label style={c.label}>{lbl}</label>
+            <input style={c.input} type={type} value={val} onChange={e=>set(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
+          </div>
+        ))}
+
+        <button style={{ ...c.saveBtn, width:"100%", padding:"15px", fontSize:16, marginTop:10,
+          display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}
+          onClick={handleLogin} disabled={loading}>
+          {loading && <Spinner size={20} color="#0a0d14" />}
+          {loading ? "Connexion…" : "Se connecter"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE PRESTATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+function PagePrestations({ toast }) {
+  const [services, setServices]     = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [showForm, setShowForm]     = useState(false);
+  const [editItem, setEditItem]     = useState(null);
+  const [form, setForm]             = useState({ name:"", category_id:"", duration:"", price:"", description:"" });
+  const [search, setSearch]         = useState("");
+  const [filterCat, setFilterCat]   = useState("all");
+  const [saving, setSaving]         = useState(false);
+  const { isMobile }                = useBreakpoint();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sRes,cRes] = await Promise.all([GET("/products?limit=200"), GET("/categories")]);
+      setServices(sRes.data); setCategories(cRes.data);
+    } catch(e) { toast(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = services.filter(s =>
+    (filterCat==="all" || s.category_id===filterCat) &&
+    s.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const openAdd  = () => { setEditItem(null); setForm({ name:"", category_id:categories[0]?.id||"", duration:"", price:"", description:"" }); setShowForm(true); };
+  const openEdit = (sv) => { setEditItem(sv); setForm({ name:sv.name, category_id:sv.category_id, duration:sv.duration||"", price:sv.price, description:sv.description||"" }); setShowForm(true); };
+
+  const handleSave = async () => {
+    if (!form.name||!form.price) return toast("Nom et prix requis");
+    setSaving(true);
+    try {
+      if (editItem) { await PUT(`/products/${editItem.id}`, {...editItem,...form,price:parseFloat(form.price)}); toast("Prestation mise à jour","success"); }
+      else { await POST("/products", {...form,price:parseFloat(form.price)}); toast("Prestation ajoutée","success"); }
+      setShowForm(false); await load();
+    } catch(e) { toast(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (sv) => {
+    if (!window.confirm(`Désactiver « ${sv.name} » ?`)) return;
+    try { await DELETE(`/products/${sv.id}`); toast("Désactivée","success"); await load(); }
+    catch(e) { toast(e.message); }
+  };
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div>
+          <div style={c.pageTitle}>Prestations</div>
+          <div style={c.pageSub}>{services.length} prestations enregistrées</div>
+        </div>
+        <button style={c.addBtn} onClick={openAdd}>+ Ajouter</button>
+      </div>
+
+      <div style={{ display:"flex", gap:12, marginBottom:18, flexWrap:"wrap", alignItems:"center" }}>
+        <input style={{ ...c.search, flex:isMobile?"1 1 100%":"0 0 280px" }}
+          placeholder="Rechercher…" value={search} onChange={e=>setSearch(e.target.value)} />
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+          {[{id:"all",name:"Toutes",color:"#f0c987"},...categories].map(cat => (
+            <button key={cat.id} style={{ ...c.tab, ...(filterCat===cat.id?{...c.tabActive,borderColor:(cat.color||"#f0c987")+"88",color:cat.color||"#f0c987"}:{}) }}
+              onClick={()=>setFilterCat(cat.id)}>{cat.name}</button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? <div style={{ display:"flex",justifyContent:"center",padding:60 }}><Spinner size={36}/></div> : (
+        <div style={c.table}>
+          {!isMobile && (
+            <div style={c.tableHead}>
+              <span style={{flex:3}}>Prestation</span><span style={{flex:2}}>Catégorie</span>
+              <span style={{flex:1}}>Durée</span><span style={{flex:1,textAlign:"right"}}>Prix</span>
+              <span style={{flex:0.6,textAlign:"right"}}>Actions</span>
+            </div>
+          )}
+          {filtered.length===0 ? <EmptyState text="Aucune prestation trouvée"/> : filtered.map(sv => (
+            <div key={sv.id} style={{ ...c.tableRow, flexDirection:isMobile?"column":"row", alignItems:isMobile?"flex-start":"center", gap:isMobile?8:0 }}>
+              <span style={{flex:3,fontWeight:700,fontSize:15}}>{sv.name}</span>
+              {sv.category_name && <span style={{flex:2}}><span style={{...c.chip,background:(sv.category_color||"#888")+"22",color:sv.category_color||"#888"}}>{sv.category_name}</span></span>}
+              <span style={{flex:1,color:"#94a3b8",fontSize:13}}>{sv.duration||"—"}</span>
+              <span style={{flex:1,textAlign:isMobile?"left":"right",fontWeight:800,color:"#f0c987",fontSize:16}}>{fmt(sv.price)}</span>
+              <span style={{flex:0.6,display:"flex",gap:8,justifyContent:isMobile?"flex-start":"flex-end"}}>
+                <button style={c.iconBtn} onClick={()=>openEdit(sv)}>✎</button>
+                <button style={{...c.iconBtn,color:"#f87171"}} onClick={()=>handleDelete(sv)}>✕</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showForm && (
+        <Modal title={editItem?"Modifier la prestation":"Nouvelle prestation"} onClose={()=>setShowForm(false)}>
+          <div style={c.formGrid}>
+            <div style={{...c.formGroup,gridColumn:"1/-1"}}><label style={c.label}>Nom</label><input style={c.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Soin hydratant…"/></div>
+            <div style={c.formGroup}><label style={c.label}>Catégorie</label><select style={c.input} value={form.category_id} onChange={e=>setForm(f=>({...f,category_id:e.target.value}))}><option value="">— Sélectionner —</option>{categories.map(cat=><option key={cat.id} value={cat.id}>{cat.name}</option>)}</select></div>
+            <div style={c.formGroup}><label style={c.label}>Durée</label><input style={c.input} value={form.duration} onChange={e=>setForm(f=>({...f,duration:e.target.value}))} placeholder="45 min"/></div>
+            <div style={c.formGroup}><label style={c.label}>Prix (€)</label><input style={c.input} type="number" value={form.price} onChange={e=>setForm(f=>({...f,price:e.target.value}))} placeholder="65"/></div>
+            <div style={c.formGroup}><label style={c.label}>Description</label><input style={c.input} value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Description courte…"/></div>
+          </div>
+          <ModalActions onCancel={()=>setShowForm(false)} onSave={handleSave} saving={saving}/>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE CATÉGORIES
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageCategories({ toast }) {
+  const [cats, setCats]         = useState([]);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [form, setForm]         = useState({ name:"", color:"#f0c987", icon:"✦" });
+  const [saving, setSaving]     = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cRes,pRes] = await Promise.all([GET("/categories"),GET("/products?limit=500")]);
+      setCats(cRes.data); setProducts(pRes.data);
+    } catch(e) { toast(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(()=>{load();},[load]);
+
+  const countFor = (id) => products.filter(p=>p.category_id===id).length;
+  const openAdd  = () => { setEditItem(null); setForm({name:"",color:"#f0c987",icon:"✦"}); setShowForm(true); };
+  const openEdit = (cat) => { setEditItem(cat); setForm({name:cat.name,color:cat.color||"#f0c987",icon:cat.icon||"✦"}); setShowForm(true); };
+
+  const handleSave = async () => {
+    if (!form.name) return toast("Nom requis");
+    setSaving(true);
+    try {
+      if (editItem) { await PUT(`/categories/${editItem.id}`,form); toast("Mise à jour","success"); }
+      else { await POST("/categories",form); toast("Catégorie ajoutée","success"); }
+      setShowForm(false); await load();
+    } catch(e) { toast(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div><div style={c.pageTitle}>Catégories</div><div style={c.pageSub}>{cats.length} catégories</div></div>
+        <button style={c.addBtn} onClick={openAdd}>+ Ajouter</button>
+      </div>
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={36}/></div> : (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16}}>
+          {cats.map(cat => {
+            const count = countFor(cat.id);
+            return (
+              <div key={cat.id} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${cat.color||"#888"}44`,
+                borderRadius:15,padding:"22px",cursor:"pointer",transition:"all 0.15s"}}
+                onClick={()=>openEdit(cat)} className="card-hover">
+                <div style={{width:46,height:46,borderRadius:12,background:(cat.color||"#888")+"22",
+                  color:cat.color||"#888",display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:22,marginBottom:13}}>{cat.icon||"✦"}</div>
+                <div style={{fontSize:16,fontWeight:700,color:"#f8fafc",marginBottom:4}}>{cat.name}</div>
+                <div style={{fontSize:13,color:"#64748b",marginBottom:10}}>{count} prestation{count!==1?"s":""}</div>
+                <div style={{height:5,borderRadius:4,background:"rgba(255,255,255,0.06)"}}>
+                  <div style={{width:`${Math.min(100,count*14)}%`,height:"100%",background:cat.color||"#888",borderRadius:4}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {showForm && (
+        <Modal title={editItem?"Modifier la catégorie":"Nouvelle catégorie"} onClose={()=>setShowForm(false)}>
+          <div style={c.formGrid}>
+            <div style={c.formGroup}><label style={c.label}>Nom</label><input style={c.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Soins visage…"/></div>
+            <div style={c.formGroup}><label style={c.label}>Icône</label><input style={c.input} value={form.icon} onChange={e=>setForm(f=>({...f,icon:e.target.value}))} placeholder="✦"/></div>
+            <div style={c.formGroup}><label style={c.label}>Couleur</label>
+              <div style={{display:"flex",gap:12,alignItems:"center"}}>
+                <input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))} style={{width:50,height:44,borderRadius:9,border:"none",cursor:"pointer"}}/>
+                <div style={{width:34,height:34,borderRadius:9,background:form.color}}/>
+              </div>
+            </div>
+          </div>
+          <ModalActions onCancel={()=>setShowForm(false)} onSave={handleSave} saving={saving}/>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE CLIENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageClients({ toast }) {
+  const [clients, setClients]       = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [showForm, setShowForm]     = useState(false);
+  const [editItem, setEditItem]     = useState(null);
+  const [form, setForm]             = useState({name:"",email:"",phone:"",address:""});
+  const [search, setSearch]         = useState("");
+  const [saving, setSaving]         = useState(false);
+  const [pagination, setPagination] = useState({total:0});
+  const { isMobile }                = useBreakpoint();
+
+  const load = useCallback(async (s="") => {
+    setLoading(true);
+    try {
+      const res = await GET(`/customers?search=${encodeURIComponent(s)}&limit=50`);
+      setClients(res.data); setPagination(res.pagination);
+    } catch(e) { toast(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(()=>{load();},[load]);
+  useEffect(()=>{ const t=setTimeout(()=>load(search),350); return ()=>clearTimeout(t); },[search]);
+
+  const openAdd  = () => { setEditItem(null); setForm({name:"",email:"",phone:"",address:""}); setShowForm(true); };
+  const openEdit = (cl) => { setEditItem(cl); setForm({name:cl.name,email:cl.email||"",phone:cl.phone||"",address:cl.address||""}); setShowForm(true); };
+
+  const handleSave = async () => {
+    if (!form.name) return toast("Nom requis");
+    setSaving(true);
+    try {
+      if (editItem) { await PUT(`/customers/${editItem.id}`,form); toast("Client mis à jour","success"); }
+      else { await POST("/customers",form); toast("Client ajouté","success"); }
+      setShowForm(false); await load(search);
+    } catch(e) { toast(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div><div style={c.pageTitle}>Clients</div><div style={c.pageSub}>{pagination.total} clients enregistrés</div></div>
+        <button style={c.addBtn} onClick={openAdd}>+ Ajouter</button>
+      </div>
+      <input style={{...c.search,marginBottom:20,width:isMobile?"100%":"320px"}}
+        placeholder="Rechercher un client…" value={search} onChange={e=>setSearch(e.target.value)}/>
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={36}/></div> : (
+        <div style={c.table}>
+          {!isMobile && (
+            <div style={c.tableHead}>
+              <span style={{flex:3}}>Client</span><span style={{flex:2}}>Contact</span>
+              <span style={{flex:1,textAlign:"center"}}>Points</span>
+              <span style={{flex:1,textAlign:"right"}}>Total dépensé</span>
+              <span style={{flex:0.5,textAlign:"right"}}>✎</span>
+            </div>
+          )}
+          {clients.length===0 ? <EmptyState text="Aucun client trouvé"/> : clients.map(cl => (
+            <div key={cl.id} style={{...c.tableRow,flexDirection:isMobile?"column":"row",gap:isMobile?8:0}}>
+              <span style={{flex:3,display:"flex",alignItems:"center"}}><span style={c.avatar}>{(cl.name||"?")[0]}</span><span style={{fontWeight:700,fontSize:15}}>{cl.name}</span></span>
+              <span style={{flex:2,color:"#94a3b8",fontSize:13}}><div>{cl.email}</div><div>{cl.phone}</div></span>
+              <span style={{flex:1,textAlign:isMobile?"left":"center"}}><span style={c.loyaltyBadge}>⭐ {cl.loyalty_points||0}</span></span>
+              <span style={{flex:1,textAlign:isMobile?"left":"right",fontWeight:800,color:"#f0c987",fontSize:15}}>{fmt(cl.total_spent||0)}</span>
+              <span style={{flex:0.5,textAlign:isMobile?"left":"right"}}><button style={c.iconBtn} onClick={()=>openEdit(cl)}>✎</button></span>
+            </div>
+          ))}
+        </div>
+      )}
+      {showForm && (
+        <Modal title={editItem?"Modifier le client":"Nouveau client"} onClose={()=>setShowForm(false)}>
+          <div style={c.formGrid}>
+            {[["Nom complet *","name","text","Marie Dupont"],["Email","email","email","marie@…"],["Téléphone","phone","tel","06 12 34 56 78"],["Adresse","address","text","12 rue des Lilas…"]].map(([lbl,key,type,ph])=>(
+              <div key={key} style={c.formGroup}><label style={c.label}>{lbl}</label><input style={c.input} type={type} value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} placeholder={ph}/></div>
+            ))}
+          </div>
+          <ModalActions onCancel={()=>setShowForm(false)} onSave={handleSave} saving={saving}/>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE EMPLOYÉS
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageEmployes({ toast, currentUser }) {
+  const [employees, setEmployees] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [showForm, setShowForm]   = useState(false);
+  const [form, setForm]           = useState({name:"",email:"",role:"cashier",color:"#f0c987",password:""});
+  const [saving, setSaving]       = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { const res = await GET("/employees"); setEmployees(res.data); }
+    catch(e) { toast(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(()=>{load();},[load]);
+
+  const handleSave = async () => {
+    if (!form.name||!form.email) return toast("Nom et email requis");
+    if (currentUser?.role!=="admin") return toast("Seul l'admin peut créer des employés");
+    setSaving(true);
+    try { await POST("/employees",form); toast("Employé ajouté","success"); setShowForm(false); await load(); }
+    catch(e) { toast(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const ROLE_LABELS = {admin:"Admin",manager:"Manager",cashier:"Employé(e)"};
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div><div style={c.pageTitle}>Employés</div><div style={c.pageSub}>{employees.length} membres de l'équipe</div></div>
+        {currentUser?.role==="admin" && <button style={c.addBtn} onClick={()=>setShowForm(true)}>+ Ajouter</button>}
+      </div>
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={36}/></div> : (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16}}>
+          {employees.map(emp => (
+            <div key={emp.id} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${emp.color||"#888"}44`,
+              borderRadius:18,padding:"28px",textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+              <div style={{width:64,height:64,borderRadius:"50%",border:`2px solid ${emp.color||"#888"}66`,
+                background:(emp.color||"#888")+"22",color:emp.color||"#888",display:"flex",alignItems:"center",
+                justifyContent:"center",fontSize:22,fontWeight:900}}>
+                {(emp.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)}
+              </div>
+              <div style={{fontSize:17,fontWeight:700,color:"#f8fafc"}}>{emp.name}</div>
+              <div style={{fontSize:14,color:"#64748b"}}>{ROLE_LABELS[emp.role]||emp.role}</div>
+              {emp.id===currentUser?.id && <span style={{fontSize:12,background:"rgba(240,201,135,0.15)",color:"#f0c987",padding:"3px 10px",borderRadius:20,fontWeight:700}}>Vous</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {showForm && (
+        <Modal title="Nouvel employé" onClose={()=>setShowForm(false)}>
+          <div style={c.formGrid}>
+            <div style={c.formGroup}><label style={c.label}>Nom complet *</label><input style={c.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Sophie Martin"/></div>
+            <div style={c.formGroup}><label style={c.label}>Email *</label><input style={c.input} type="email" value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))} placeholder="sophie@salon.com"/></div>
+            <div style={c.formGroup}><label style={c.label}>Rôle</label><select style={c.input} value={form.role} onChange={e=>setForm(f=>({...f,role:e.target.value}))}><option value="cashier">Employé(e)</option><option value="manager">Manager</option><option value="admin">Admin</option></select></div>
+            <div style={c.formGroup}><label style={c.label}>Mot de passe initial</label><input style={c.input} type="password" value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))} placeholder="changeme123"/></div>
+            <div style={c.formGroup}><label style={c.label}>Couleur</label>
+              <div style={{display:"flex",gap:12,alignItems:"center"}}>
+                <input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))} style={{width:50,height:44,borderRadius:9,border:"none",cursor:"pointer"}}/>
+                <div style={{width:34,height:34,borderRadius:9,background:form.color}}/>
+              </div>
+            </div>
+          </div>
+          <ModalActions onCancel={()=>setShowForm(false)} onSave={handleSave} saving={saving}/>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE DÉPENSES
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageDepenses({ toast }) {
+  const now0 = new Date();
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [form, setForm]         = useState({label:"",amount:"",category:"",date:now0.toISOString().split("T")[0],notes:""});
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [aiLoading, setAiLoading]       = useState(false);
+  const [aiDone, setAiDone]             = useState(false);
+  const [saving, setSaving]             = useState(false);
+  const [total, setTotal]               = useState(0);
+  const [selMonth, setSelMonth]         = useState(now0.getMonth()); // 0–11
+  const [selYear,  setSelYear]          = useState(now0.getFullYear());
+  const fileRef                         = useRef();
+  const { isMobile }                    = useBreakpoint();
+
+  const MONTHS = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  const currentYear = now0.getFullYear();
+  const years = Array.from({length: 5}, (_,i) => currentYear - i);
+
+  const prevMonth = () => { if(selMonth===0){setSelMonth(11);setSelYear(y=>y-1);}else{setSelMonth(m=>m-1);} };
+  const nextMonth = () => {
+    const isCurrentMonth = selYear===currentYear && selMonth===now0.getMonth();
+    if(isCurrentMonth) return;
+    if(selMonth===11){setSelMonth(0);setSelYear(y=>y+1);}else{setSelMonth(m=>m+1);}
+  };
+  const isCurrentMonth = selYear===currentYear && selMonth===now0.getMonth();
+
+  const load = useCallback(async (month, year) => {
+    setLoading(true);
+    try {
+      const from = `${year}-${String(month+1).padStart(2,"0")}-01`;
+      const lastDay = new Date(year, month+1, 0).getDate();
+      const to   = `${year}-${String(month+1).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
+      const res  = await GET(`/expenses?from=${from}&to=${to}&limit=200`);
+      setExpenses(res.data);
+      setTotal(res.data.reduce((s,e)=>s+parseFloat(e.amount),0));
+    } catch(e) { toast(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(()=>{ load(selMonth, selYear); },[selMonth, selYear]);
+
+  const openAdd  = () => { setEditItem(null); setForm({label:"",amount:"",category:"",date:new Date().toISOString().split("T")[0],notes:""}); setPhotoPreview(null); setAiDone(false); setShowForm(true); };
+  const openEdit = (e) => { setEditItem(e); setForm({label:e.label,amount:e.amount,category:e.category||"",date:e.date,notes:e.notes||""}); setPhotoPreview(null); setAiDone(false); setShowForm(true); };
+
+  const handlePhotoUpload = async (evt) => {
+    const file = evt.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64    = ev.target.result.split(",")[1];
+      const mediaType = file.type;
+      setPhotoPreview(ev.target.result);
+      setAiLoading(true); setAiDone(false);
+      try {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            model:"claude-sonnet-4-20250514", max_tokens:400,
+            messages:[{role:"user",content:[
+              {type:"image",source:{type:"base64",media_type:mediaType,data:base64}},
+              {type:"text",text:`Analyse cette facture et extrais en JSON strict (sans markdown) :
+{"label":"description courte","amount":nombre,"category":"Matériel|Loyer|Stock|Salaires|Services|Autre","date":"YYYY-MM-DD"}
+Ne renvoie QUE le JSON.`}
+            ]}]
+          })
+        });
+        const data = await response.json();
+        const text   = data.content?.map(b=>b.text||"").join("")||"";
+        const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
+        setForm(f=>({...f,label:parsed.label||f.label,amount:parsed.amount||f.amount,category:parsed.category||f.category,date:parsed.date||f.date}));
+        setAiDone(true);
+      } catch { toast("Extraction automatique échouée — renseignez manuellement"); }
+      finally { setAiLoading(false); }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSave = async () => {
+    if (!form.label||!form.amount) return toast("Description et montant requis");
+    setSaving(true);
+    try {
+      if (editItem) { await PUT(`/expenses/${editItem.id}`,form); toast("Mise à jour","success"); }
+      else { await POST("/expenses",form); toast("Dépense enregistrée","success"); }
+      setShowForm(false); await load(selMonth, selYear);
+    } catch(e) { toast(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (e) => {
+    if (!window.confirm(`Supprimer « ${e.label} » ?`)) return;
+    try { await DELETE(`/expenses/${e.id}`); toast("Supprimée","success"); await load(selMonth, selYear); }
+    catch(err) { toast(err.message); }
+  };
+
+  const catColors = {"Matériel":"#818cf8","Loyer":"#f87171","Stock":"#34d399","Salaires":"#f59e0b","Services":"#60a5fa","Autre":"#94a3b8"};
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div>
+          <div style={c.pageTitle}>Dépenses</div>
+          <div style={c.pageSub}>Total : <span style={{color:"#f87171",fontWeight:800}}>{fmt(total)}</span></div>
+        </div>
+        <button style={c.addBtn} onClick={openAdd}>+ Ajouter</button>
+      </div>
+
+      {/* Sélecteur mois/année */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:20,flexWrap:"wrap"}}>
+        <button onClick={prevMonth} style={{width:36,height:36,borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#94a3b8",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>‹</button>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <select value={selMonth} onChange={e=>setSelMonth(Number(e.target.value))}
+            style={{...c.input,padding:"8px 12px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:120}}>
+            {MONTHS.map((m,i)=>(
+              <option key={i} value={i} disabled={selYear===currentYear && i>now0.getMonth()}>{m}</option>
+            ))}
+          </select>
+          <select value={selYear} onChange={e=>setSelYear(Number(e.target.value))}
+            style={{...c.input,padding:"8px 12px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:80}}>
+            {years.map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <button onClick={nextMonth} disabled={isCurrentMonth}
+          style={{width:36,height:36,borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:isCurrentMonth?"#2d3748":"#94a3b8",fontSize:18,cursor:isCurrentMonth?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>›</button>
+        {!isCurrentMonth && (
+          <button onClick={()=>{setSelMonth(now0.getMonth());setSelYear(currentYear);}}
+            style={{padding:"7px 14px",borderRadius:9,border:"1px solid rgba(240,201,135,0.25)",background:"rgba(240,201,135,0.08)",color:"#f0c987",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+            Mois actuel
+          </button>
+        )}
+        <div style={{marginLeft:"auto",fontSize:14,color:"#64748b"}}>
+          {expenses.length} dépense{expenses.length!==1?"s":""}
+        </div>
+      </div>
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={36}/></div> : (
+        <div style={c.table}>
+          {!isMobile && (
+            <div style={c.tableHead}>
+              <span style={{flex:3}}>Description</span><span style={{flex:1.5}}>Catégorie</span>
+              <span style={{flex:1}}>Date</span><span style={{flex:1,textAlign:"right"}}>Montant</span>
+              <span style={{flex:0.6,textAlign:"right"}}>Actions</span>
+            </div>
+          )}
+          {expenses.length===0 ? <EmptyState text="Aucune dépense ce mois"/> : expenses.map(e => (
+            <div key={e.id} style={{...c.tableRow,flexDirection:isMobile?"column":"row",gap:isMobile?8:0}}>
+              <span style={{flex:3,fontWeight:700,fontSize:15}}>{e.label}{e.notes&&<span style={{fontWeight:400,color:"#64748b",fontSize:13}}> · {e.notes}</span>}</span>
+              <span style={{flex:1.5}}><span style={{...c.chip,background:(catColors[e.category]||"#888")+"22",color:catColors[e.category]||"#888"}}>{e.category||"Autre"}</span></span>
+              <span style={{flex:1,color:"#94a3b8",fontSize:13}}>{e.date}</span>
+              <span style={{flex:1,textAlign:isMobile?"left":"right",fontWeight:800,color:"#f87171",fontSize:15}}>−{fmt(e.amount)}</span>
+              <span style={{flex:0.6,display:"flex",gap:8,justifyContent:isMobile?"flex-start":"flex-end"}}>
+                <button style={c.iconBtn} onClick={()=>openEdit(e)}>✎</button>
+                <button style={{...c.iconBtn,color:"#f87171"}} onClick={()=>handleDelete(e)}>✕</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {showForm && (
+        <Modal title={editItem?"Modifier la dépense":"Nouvelle dépense"} onClose={()=>{setShowForm(false);setPhotoPreview(null);setAiDone(false);}}>
+          <div style={{border:`2px dashed ${photoPreview?"rgba(240,201,135,0.3)":"rgba(255,255,255,0.1)"}`,
+            borderRadius:12,padding:"20px",cursor:photoPreview?"default":"pointer",
+            display:"flex",justifyContent:"center",alignItems:"center",minHeight:110,position:"relative",marginBottom:18}}
+            onClick={()=>!photoPreview&&fileRef.current?.click()}>
+            {photoPreview ? (
+              <div style={{position:"relative",textAlign:"center",width:"100%"}}>
+                <img src={photoPreview} alt="facture" style={{maxHeight:160,maxWidth:"100%",borderRadius:9,objectFit:"contain"}}/>
+                <button onClick={e=>{e.stopPropagation();setPhotoPreview(null);setAiDone(false);}}
+                  style={{position:"absolute",top:-10,right:-10,width:26,height:26,borderRadius:"50%",background:"#f87171",border:"none",color:"#fff",fontSize:13,cursor:"pointer",fontWeight:700}}>✕</button>
+                {aiLoading && (
+                  <div style={{position:"absolute",inset:0,background:"rgba(10,13,20,0.88)",borderRadius:9,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12}}>
+                    <Spinner size={32}/><div style={{color:"#f0c987",fontWeight:700,fontSize:14}}>Analyse IA en cours…</div>
+                  </div>
+                )}
+                {aiDone && <div style={{marginTop:10,fontSize:13,color:"#10b981",fontWeight:600}}>✓ Informations extraites — vérifiez avant d'enregistrer</div>}
+              </div>
+            ) : (
+              <div style={{textAlign:"center",color:"#475569"}}>
+                <div style={{fontSize:30,marginBottom:8}}>📸</div>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:4}}>Ajouter une photo de facture</div>
+                <div style={{fontSize:12}}>L'IA extraira automatiquement les informations</div>
+              </div>
+            )}
+            <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={handlePhotoUpload}/>
+          </div>
+          <div style={c.formGrid}>
+            <div style={{...c.formGroup,gridColumn:"1/-1"}}><label style={c.label}>Description *</label><input style={c.input} value={form.label} onChange={e=>setForm(f=>({...f,label:e.target.value}))} placeholder="Achat fournitures…"/></div>
+            <div style={c.formGroup}><label style={c.label}>Montant (€) *</label><input style={c.input} type="number" step="0.01" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="0,00"/></div>
+            <div style={c.formGroup}><label style={c.label}>Catégorie</label><select style={c.input} value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}><option value="">Sélectionner…</option>{Object.keys(catColors).map(cat=><option key={cat} value={cat}>{cat}</option>)}</select></div>
+            <div style={c.formGroup}><label style={c.label}>Date</label><input style={c.input} type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></div>
+            <div style={c.formGroup}><label style={c.label}>Notes</label><input style={c.input} value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} placeholder="Remarques…"/></div>
+          </div>
+          <ModalActions onCancel={()=>{setShowForm(false);setPhotoPreview(null);setAiDone(false);}} onSave={handleSave} saving={saving||aiLoading}/>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE RAPPORT
+// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE RAPPORT JOURNALIER
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageRapportJournalier({ toast }) {
+  const now0    = new Date();
+  const todayStr = now0.toISOString().split("T")[0];
+
+  const [data,      setData]      = useState(null);
+  const [expenses,  setExpenses]  = useState([]);
+  const [orders,    setOrders]    = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [selDate,   setSelDate]   = useState(todayStr);
+  const [exporting, setExporting] = useState(false);
+  const { isMobile } = useBreakpoint();
+
+  const PMTS       = {card:"💳 Carte",cash:"💵 Espèces",treatwell:"🌿 Treatwell",planity:"📅 Planity",contactless:"📲 Sans contact",check:"🖊 Chèque",mixed:"⟡ Multi"};
+  const PMT_COLORS = {card:"#6366f1",cash:"#10b981",treatwell:"#8b5cf6",planity:"#f59e0b",contactless:"#38bdf8",check:"#94a3b8",mixed:"#64748b"};
+  const payColors  = {card:"#6366f1",cash:"#10b981",treatwell:"#8b5cf6",planity:"#f59e0b",mixed:"#94a3b8",contactless:"#38bdf8"};
+  const payLabels  = {card:"💳 Carte",cash:"💵 Espèces",treatwell:"🌿 Treatwell",planity:"📅 Planity",mixed:"⟡ Multi",contactless:"📲 Sans contact"};
+
+  const isToday   = selDate === todayStr;
+  const prevDay   = () => { const d=new Date(selDate); d.setDate(d.getDate()-1); setSelDate(d.toISOString().split("T")[0]); };
+  const nextDay   = () => {
+    if(isToday) return;
+    const d=new Date(selDate); d.setDate(d.getDate()+1); setSelDate(d.toISOString().split("T")[0]);
+  };
+  const dayLabel  = () => {
+    const d = new Date(selDate+"T12:00:00");
+    if(selDate===todayStr) return "Aujourd'hui";
+    const yesterday = new Date(now0); yesterday.setDate(now0.getDate()-1);
+    if(selDate===yesterday.toISOString().split("T")[0]) return "Hier";
+    return d.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+  };
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true); setData(null); setExpenses([]); setOrders([]);
+      try {
+        const [rRes, eRes, oRes] = await Promise.all([
+          GET(`/reports/sales?from=${selDate}&to=${selDate}&group_by=hour&date_field=order_date`),
+          GET(`/expenses?from=${selDate}&to=${selDate}&limit=200`),
+          GET(`/orders?from=${selDate}&to=${selDate}&limit=200&date_field=order_date`),
+        ]);
+        setData(rRes.data);
+        setExpenses(eRes.data||[]);
+        setOrders(oRes.data||[]);
+      } catch(e) { toast(e.message); }
+      finally { setLoading(false); }
+    })();
+  },[selDate]);
+
+  const { by_payment=[], by_employee=[] } = data||{};
+  const totalCA       = orders.reduce((s,o)=>s+parseFloat(o.total||0),0);
+  const totalDepenses = expenses.reduce((s,e)=>s+parseFloat(e.amount||0),0);
+  const resultat      = totalCA - totalDepenses;
+  const totalRemises  = orders.reduce((s,o)=>s+parseFloat(o.discount_amount||0),0);
+  const totalByPay    = by_payment.reduce((s,r)=>s+parseFloat(r.total||0),0)||1;
+  const maxEmpCA      = Math.max(...by_employee.map(e=>parseFloat(e.revenue||0)),1);
+
+  // Regrouper les ventes par heure pour le graphe
+  const byHour = Array.from({length:24},(_,h)=>({h,rev:0,cnt:0}));
+  orders.forEach(o=>{
+    const raw = o.created_at||o.order_date||"";
+    const h   = raw.includes("T") ? parseInt(raw.split("T")[1].split(":")[0]) : 0;
+    byHour[h].rev += parseFloat(o.total||0);
+    byHour[h].cnt += 1;
+  });
+  const activeHours = byHour.filter(h=>h.rev>0);
+  const maxHourRev  = Math.max(...byHour.map(h=>h.rev),1);
+
+  const depByCategory = expenses.reduce((acc,e)=>{
+    const cat=e.category||"Autre"; acc[cat]=(acc[cat]||0)+parseFloat(e.amount||0); return acc;
+  },{});
+
+  const exportCSV = () => {
+    setExporting(true);
+    try {
+      const rows = [
+        `"Rapport journalier — ${dayLabel()} (${selDate})"`,
+        "",
+        "=== VENTES ===",
+        '"Heure";"N° commande";"Client";"Employé";"Paiement";"Remise (€)";"Total (€)"',
+        ...orders.map(o=>{
+          const raw=o.created_at||""; const h=raw.includes("T")?raw.split("T")[1].slice(0,5):"";
+          return `"${h}";"${o.order_number||o.id}";"${o.customer_name||""}";"${o.employee_name||""}";"${o.payment_method||""}";"${parseFloat(o.discount_amount||0).toFixed(2)}";"${parseFloat(o.total||0).toFixed(2)}"`;
+        }),
+        `"TOTAL";"";"";"";"";"${totalRemises.toFixed(2)}";"${totalCA.toFixed(2)}"`,
+        "",
+        "=== DÉPENSES ===",
+        '"Description";"Catégorie";"Montant (€)"',
+        ...expenses.map(e=>`"${(e.label||"").replace(/"/g,'""')}";"${e.category||"Autre"}";"${parseFloat(e.amount||0).toFixed(2)}"`),
+        `"TOTAL";"";"";"${totalDepenses.toFixed(2)}"`,
+        "",
+        `"RÉSULTAT NET";"";"";"${resultat.toFixed(2)}"`,
+      ];
+      const blob = new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8;"});
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href=url; a.download=`rapport_journalier_${selDate}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch(e) { toast("Erreur export"); }
+    finally { setExporting(false); }
+  };
+
+  return (
+    <div style={c.page}>
+      {/* Header */}
+      <div style={c.pageHeader}>
+        <div>
+          <div style={c.pageTitle}>Rapport journalier</div>
+          <div style={c.pageSub}>{dayLabel()}</div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {!loading && (
+            <button onClick={exportCSV} disabled={exporting}
+              style={{padding:"10px 18px",borderRadius:10,border:"1px solid rgba(255,255,255,0.12)",background:"rgba(255,255,255,0.05)",color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7,fontFamily:"inherit"}}>
+              {exporting?<Spinner size={14}/>:"↓"} Export CSV
+            </button>
+          )}
+          {!loading && <div style={{padding:"12px 22px",borderRadius:11,background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",color:"#f0c987",fontWeight:900,fontSize:22}}>{fmtShort(totalCA)}</div>}
+        </div>
+      </div>
+
+      {/* Sélecteur jour */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:22,flexWrap:"wrap"}}>
+        <button onClick={prevDay} style={navBtn}>‹</button>
+        <input type="date" value={selDate} max={todayStr}
+          onChange={e=>{ if(e.target.value<=todayStr) setSelDate(e.target.value); }}
+          style={{...c.input,padding:"8px 14px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:160}}/>
+        <button onClick={nextDay} disabled={isToday}
+          style={{...navBtn,opacity:isToday?0.3:1,cursor:isToday?"not-allowed":"pointer"}}>›</button>
+        {!isToday && (
+          <button onClick={()=>setSelDate(todayStr)} style={resetBtn}>Aujourd'hui</button>
+        )}
+        {!loading && <span style={{marginLeft:"auto",fontSize:13,color:"#64748b"}}>{orders.length} vente{orders.length!==1?"s":""}</span>}
+      </div>
+
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:80}}><Spinner size={44}/></div> : (
+        <>
+          {/* KPIs */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12,marginBottom:20}}>
+            {[
+              {label:"Chiffre d'affaires",val:totalCA,      color:"#f0c987",icon:"◈"},
+              {label:"Nb ventes",          val:orders.length,color:"#818cf8",icon:"⊞",isCt:true},
+              {label:"Panier moyen",        val:orders.length?totalCA/orders.length:0,color:"#34d399",icon:"◇"},
+              {label:"Total dépenses",      val:totalDepenses,color:"#f87171",icon:"◻"},
+              {label:"Résultat net",         val:resultat,    color:resultat>=0?"#10b981":"#f87171",icon:resultat>=0?"▲":"▼"},
+              {label:"Remises",             val:totalRemises, color:"#f59e0b",icon:"−"},
+            ].map(k=>(
+              <div key={k.label} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${k.color}44`,borderRadius:14,padding:"16px",textAlign:"center"}}>
+                <div style={{fontSize:18,marginBottom:5}}>{k.icon}</div>
+                <div style={{fontSize:20,fontWeight:900,color:k.color}}>{k.isCt?k.val:fmtShort(k.val)}</div>
+                <div style={{fontSize:11,color:"#64748b",marginTop:3}}>{k.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Graphe par heure */}
+          {activeHours.length>0 && (
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:15,padding:"20px",marginBottom:16}}>
+              <div style={c.cardTitle}>Activité par heure</div>
+              <div style={{display:"flex",alignItems:"flex-end",gap:3,height:120,paddingTop:12,overflowX:"auto"}}>
+                {byHour.map((h,i)=>(
+                  <div key={i} style={{flex:"0 0 auto",width:isMobile?22:28,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                    <div style={{width:"100%",height:90,display:"flex",alignItems:"flex-end",position:"relative"}}>
+                      {h.rev>0 && (
+                        <div className="bar-item" title={`${h.h}h — ${fmt(h.rev)} (${h.cnt} vente${h.cnt>1?"s":""})`}
+                          style={{width:"100%",height:`${(h.rev/maxHourRev)*100}%`,background:"linear-gradient(180deg,#f0c987,#e8a44e)",borderRadius:"4px 4px 0 0",minHeight:4,cursor:"pointer",position:"relative"}}>
+                          <div className="bar-tooltip" style={{display:"none",position:"absolute",top:-32,left:"50%",transform:"translateX(-50%)",background:"#1e2433",padding:"3px 8px",borderRadius:6,fontSize:11,color:"#f0c987",fontWeight:700,whiteSpace:"nowrap",zIndex:10}}>
+                            {fmt(h.rev)} · {h.cnt}v
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{fontSize:9,color:h.rev>0?"#64748b":"#1e293b",textAlign:"center"}}>{h.h}h</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {orders.length===0 && expenses.length===0 && <EmptyState icon="◷" text={`Aucune donnée pour ${dayLabel()}`}/>}
+
+          {/* Ventes du jour */}
+          {orders.length>0 && (
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:15,padding:"20px",marginBottom:16}}>
+              <div style={c.cardTitle}>Ventes du jour ({orders.length})</div>
+              <div style={c.table}>
+                {!isMobile && (
+                  <div style={c.tableHead}>
+                    <span style={{flex:0.7}}>Heure</span>
+                    <span style={{flex:1}}>N° commande</span>
+                    <span style={{flex:1.5}}>Client</span>
+                    <span style={{flex:1.2}}>Employé</span>
+                    <span style={{flex:1}}>Paiement</span>
+                    <span style={{flex:0.8,textAlign:"right"}}>Remise</span>
+                    <span style={{flex:1,textAlign:"right"}}>Total</span>
+                  </div>
+                )}
+                {orders.map(order=>{
+                  const raw=order.created_at||"";
+                  const heure = raw.includes("T") ? raw.split("T")[1].slice(0,5) : "—";
+                  const pmtColor = PMT_COLORS[order.payment_method]||"#64748b";
+                  return (
+                    <div key={order.id} style={{...c.tableRow,flexDirection:isMobile?"column":"row",gap:isMobile?6:0,alignItems:isMobile?"flex-start":"center"}}>
+                      {isMobile ? (
+                        <>
+                          <div style={{display:"flex",justifyContent:"space-between",width:"100%"}}>
+                            <span style={{fontSize:12,color:"#64748b"}}>{heure}</span>
+                            <span style={{fontWeight:900,color:"#f0c987",fontSize:16}}>{fmt(order.total)}</span>
+                          </div>
+                          <div style={{fontSize:14,fontWeight:700}}>{order.order_number||`#${order.id}`}</div>
+                          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                            {order.customer_name&&<span style={{fontSize:12,color:"#94a3b8"}}>◉ {order.customer_name}</span>}
+                            {order.employee_name&&<span style={{fontSize:12,color:"#818cf8"}}>⟡ {order.employee_name}</span>}
+                            <span style={{fontSize:11,padding:"2px 8px",borderRadius:20,background:pmtColor+"18",color:pmtColor,fontWeight:600}}>{PMTS[order.payment_method]||order.payment_method||"—"}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{flex:0.7,fontSize:14,fontWeight:700,color:"#f0c987",fontVariantNumeric:"tabular-nums"}}>{heure}</span>
+                          <span style={{flex:1,fontSize:13,color:"#64748b"}}>{order.order_number||`#${order.id}`}</span>
+                          <span style={{flex:1.5,fontSize:14}}>{order.customer_name||<span style={{color:"#334155"}}>—</span>}</span>
+                          <span style={{flex:1.2,fontSize:13,color:"#818cf8"}}>{order.employee_name||<span style={{color:"#334155"}}>—</span>}</span>
+                          <span style={{flex:1}}><span style={{fontSize:12,padding:"3px 9px",borderRadius:20,background:pmtColor+"18",color:pmtColor,fontWeight:600}}>{PMTS[order.payment_method]||order.payment_method||"—"}</span></span>
+                          <span style={{flex:0.8,textAlign:"right",fontSize:13,color:"#f59e0b"}}>{parseFloat(order.discount_amount||0)>0?"−"+fmt(order.discount_amount):"—"}</span>
+                          <span style={{flex:1,textAlign:"right",fontWeight:900,fontSize:15,color:"#f0c987"}}>{fmt(order.total)}</span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                <div style={{display:"flex",justifyContent:"space-between",padding:"12px 16px",borderTop:"1px solid rgba(255,255,255,0.08)",marginTop:4}}>
+                  <span style={{fontSize:13,color:"#64748b"}}>{orders.length} vente{orders.length!==1?"s":""}</span>
+                  {totalRemises>0&&<span style={{fontSize:13,color:"#f59e0b"}}>Remises −{fmt(totalRemises)}</span>}
+                  <span style={{fontWeight:900,fontSize:16,color:"#f0c987"}}>{fmt(totalCA)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Répartition paiements + employés */}
+          {(by_payment.length>0||by_employee.length>0) && (
+            <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:14,marginBottom:16}}>
+              {by_payment.length>0 && (
+                <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"18px"}}>
+                  <div style={c.cardTitle}>Par moyen de paiement</div>
+                  {by_payment.map(pb=>{
+                    const pct=(parseFloat(pb.total)/totalByPay)*100;
+                    return (
+                      <div key={pb.method} style={{marginBottom:14}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:5,fontSize:13}}>
+                          <span>{payLabels[pb.method]||pb.method}</span>
+                          <span style={{fontWeight:800,color:payColors[pb.method]||"#888"}}>{fmt(parseFloat(pb.total))}</span>
+                        </div>
+                        <div style={{height:5,borderRadius:4,background:"rgba(255,255,255,0.06)"}}>
+                          <div style={{width:`${pct}%`,height:"100%",borderRadius:4,background:payColors[pb.method]||"#888"}}/>
+                        </div>
+                        <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{pct.toFixed(0)}% · {pb.count} vente{pb.count>1?"s":""}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {by_employee.length>0 && (
+                <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"18px"}}>
+                  <div style={c.cardTitle}>Par employé</div>
+                  {by_employee.map((emp,i)=>{
+                    const empColor=emp.color||["#f0c987","#818cf8","#34d399","#f472b6"][i%4];
+                    return (
+                      <div key={emp.id} style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+                        <div style={{width:36,height:36,borderRadius:"50%",border:`2px solid ${empColor}66`,background:empColor+"22",color:empColor,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:900,flexShrink:0}}>
+                          {(emp.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)}
+                        </div>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>{emp.name}</div>
+                          <div style={{height:4,borderRadius:3,background:"rgba(255,255,255,0.06)"}}>
+                            <div style={{width:`${(parseFloat(emp.revenue)/maxEmpCA)*100}%`,height:"100%",borderRadius:3,background:empColor}}/>
+                          </div>
+                        </div>
+                        <div style={{textAlign:"right",flexShrink:0}}>
+                          <div style={{fontSize:14,fontWeight:800,color:empColor}}>{fmt(parseFloat(emp.revenue||0))}</div>
+                          <div style={{fontSize:11,color:"#64748b"}}>{emp.total_orders} vente{emp.total_orders>1?"s":""}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Dépenses du jour */}
+          {expenses.length>0 && (
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(248,113,113,0.2)",borderRadius:14,padding:"18px",marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div style={c.cardTitle}>Dépenses du jour</div>
+                <span style={{fontSize:15,fontWeight:900,color:"#f87171"}}>{fmt(totalDepenses)}</span>
+              </div>
+              {Object.entries(depByCategory).map(([cat,val])=>{
+                const catColors={"Matériel":"#818cf8","Loyer":"#f87171","Stock":"#34d399","Salaires":"#f59e0b","Services":"#60a5fa","Autre":"#94a3b8"};
+                const col=catColors[cat]||"#94a3b8";
+                return (
+                  <div key={cat} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
+                    <span style={{fontSize:12,padding:"3px 9px",borderRadius:20,background:col+"18",color:col,fontWeight:600}}>{cat}</span>
+                    <span style={{fontSize:14,fontWeight:800,color:"#f87171"}}>−{fmt(val)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Résultat net */}
+          {(orders.length>0||expenses.length>0) && (
+            <div style={{background:resultat>=0?"rgba(16,185,129,0.06)":"rgba(248,113,113,0.06)",border:`1px solid ${resultat>=0?"rgba(16,185,129,0.25)":"rgba(248,113,113,0.25)"}`,borderRadius:14,padding:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:13,color:"#64748b",marginBottom:4}}>Résultat net — {dayLabel()}</div>
+                <div style={{fontSize:12,color:"#475569"}}>CA {fmt(totalCA)} − Dépenses {fmt(totalDepenses)}</div>
+              </div>
+              <div style={{fontSize:28,fontWeight:900,color:resultat>=0?"#10b981":"#f87171"}}>{resultat>=0?"+":""}{fmt(resultat)}</div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PageRapport({ type, toast }) {
+  const isAnnual   = type==="annuel";
+  const now0       = new Date();
+  const curYear    = now0.getFullYear();
+  const curMonth   = now0.getMonth();
+
+  const [data,     setData]     = useState(null);
+  const [expenses, setExpenses] = useState([]);
+  const [orders,   setOrders]   = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [selMonth, setSelMonth] = useState(curMonth);
+  const [selYear,  setSelYear]  = useState(curYear);
+  const [exporting,setExporting]= useState(false);
+  const { isMobile } = useBreakpoint();
+
+  const MONTHS = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  const years  = Array.from({length:5},(_,i)=>curYear-i);
+
+  const prevMonth = () => { if(selMonth===0){setSelMonth(11);setSelYear(y=>y-1);}else setSelMonth(m=>m-1); };
+  const nextMonth = () => {
+    if(selYear===curYear && selMonth===curMonth) return;
+    if(selMonth===11){setSelMonth(0);setSelYear(y=>y+1);}else setSelMonth(m=>m+1);
+  };
+  const atCurrentMonth = selYear===curYear && selMonth===curMonth;
+  const atCurrentYear  = selYear===curYear;
+
+  const from = isAnnual ? `${selYear}-01-01` : `${selYear}-${String(selMonth+1).padStart(2,"0")}-01`;
+  const to   = isAnnual ? `${selYear}-12-31` : (() => { const d=new Date(selYear,selMonth+1,0); return d.toISOString().split("T")[0]; })();
+  const periodLabel = isAnnual ? `Exercice ${selYear}` : `${MONTHS[selMonth]} ${selYear}`;
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true); setData(null); setExpenses([]); setOrders([]);
+      try {
+        const [rRes, eRes, oRes] = await Promise.all([
+          GET(`/reports/sales?from=${from}&to=${to}&group_by=${isAnnual?"month":"day"}&date_field=order_date`),
+          GET(`/expenses?from=${from}&to=${to}&limit=500`),
+          GET(`/orders?from=${from}&to=${to}&limit=500&date_field=order_date`),
+        ]);
+        setData(rRes.data);
+        setExpenses(eRes.data||[]);
+        setOrders(oRes.data||[]);
+      } catch(e) { toast(e.message); }
+      finally { setLoading(false); }
+    })();
+  },[type, selMonth, selYear]);
+
+  const { periods=[], by_payment=[], by_employee=[] } = data||{};
+  const totalCA      = periods.reduce((s,r)=>s+parseFloat(r.revenue||0),0);
+  const totalDepenses= expenses.reduce((s,e)=>s+parseFloat(e.amount||0),0);
+  const resultat     = totalCA - totalDepenses;
+  const maxBar       = Math.max(...periods.map(r=>parseFloat(r.revenue||0)),1);
+  const payColors    = {card:"#6366f1",cash:"#10b981",treatwell:"#8b5cf6",planity:"#f59e0b",mixed:"#94a3b8"};
+  const payLabels    = {card:"💳 Carte",cash:"💵 Espèces",treatwell:"🌿 Treatwell",planity:"📅 Planity",mixed:"⟡ Multi"};
+  const totalByPay   = by_payment.reduce((s,r)=>s+parseFloat(r.total||0),0)||1;
+  const maxEmpCA     = Math.max(...by_employee.map(e=>parseFloat(e.revenue||0)),1);
+  const monthName    = (p) => { const d=new Date(p); return d.toLocaleDateString("fr-FR",isAnnual?{month:"short"}:{day:"numeric",month:"short"}); };
+
+  // ── Regroupement dépenses par catégorie
+  const depByCategory = expenses.reduce((acc,e)=>{
+    const cat = e.category||"Autre";
+    acc[cat] = (acc[cat]||0) + parseFloat(e.amount||0);
+    return acc;
+  }, {});
+
+  // ── Export CSV
+  const exportCSV = () => {
+    setExporting(true);
+    try {
+      const rows = [];
+      // En-tête
+      rows.push(`"Rapport ${isAnnual?"annuel":"mensuel"} — ${periodLabel}"`);
+      rows.push("");
+
+      // Ventes
+      rows.push("=== VENTES ===");
+      rows.push(isAnnual
+        ? '"Mois";"CA (€)";"Nb commandes";"Remises (€)"'
+        : '"Date";"CA (€)";"Nb commandes";"Remises (€)"');
+      periods.forEach(r => {
+        const d = new Date(r.period);
+        const label = isAnnual
+          ? d.toLocaleDateString("fr-FR",{month:"long",year:"numeric"})
+          : d.toLocaleDateString("fr-FR");
+        rows.push(`"${label}";"${parseFloat(r.revenue||0).toFixed(2)}";"${r.total_orders||0}";"${parseFloat(r.discounts||0).toFixed(2)}"`);
+      });
+      rows.push(`"TOTAL";"${totalCA.toFixed(2)}";"${periods.reduce((s,r)=>s+parseInt(r.total_orders||0),0)}";""`);
+      rows.push("");
+
+      // Liste des commandes détaillées
+      if (orders.length>0) {
+        rows.push("=== DÉTAIL DES VENTES ===");
+        rows.push('"Date";"N° commande";"Client";"Employé";"Paiement";"Total (€)";"Remise (€)"');
+        orders.forEach(o => {
+          rows.push(`"${o.order_date||o.created_at?.split("T")[0]||""}";"${o.order_number||o.id}";"${o.customer_name||""}";"${o.employee_name||""}";"${o.payment_method||""}";"${parseFloat(o.total||0).toFixed(2)}";"${parseFloat(o.discount_amount||0).toFixed(2)}"`);
+        });
+        rows.push("");
+      }
+
+      // Dépenses
+      rows.push("=== DÉPENSES ===");
+      rows.push('"Date";"Description";"Catégorie";"Montant (€)"');
+      expenses.forEach(e => {
+        rows.push(`"${e.date||""}";"${(e.label||"").replace(/"/g,'""')}";"${e.category||"Autre"}";"${parseFloat(e.amount||0).toFixed(2)}"`);
+      });
+      rows.push(`"TOTAL";"";"";"${totalDepenses.toFixed(2)}"`);
+      rows.push("");
+      rows.push(`"RÉSULTAT NET";"";"";"${resultat.toFixed(2)}"`);
+
+      const csv = rows.join("\n");
+      const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8;"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `rapport_${isAnnual?selYear:`${selYear}-${String(selMonth+1).padStart(2,"0")}`}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch(e) { toast("Erreur export : "+e.message); }
+    finally { setExporting(false); }
+  };
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div>
+          <div style={c.pageTitle}>Rapport {isAnnual?"annuel":"mensuel"}</div>
+          <div style={c.pageSub}>{periodLabel}</div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {!loading && (
+            <button onClick={exportCSV} disabled={exporting}
+              style={{padding:"10px 18px",borderRadius:10,border:"1px solid rgba(255,255,255,0.12)",background:"rgba(255,255,255,0.05)",color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7,fontFamily:"inherit"}}>
+              {exporting ? <Spinner size={14}/> : "↓"} Export CSV
+            </button>
+          )}
+          {!loading && <div style={{padding:"12px 22px",borderRadius:11,background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",color:"#f0c987",fontWeight:900,fontSize:22}}>{fmtShort(totalCA)}</div>}
+        </div>
+      </div>
+
+      {/* ── Sélecteur période ── */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:22,flexWrap:"wrap"}}>
+        {isAnnual ? (
+          <>
+            <button onClick={()=>setSelYear(y=>y-1)} disabled={selYear<=curYear-4} style={{...navBtn,opacity:selYear<=curYear-4?0.3:1}}>‹</button>
+            <select value={selYear} onChange={e=>setSelYear(Number(e.target.value))} style={{...c.input,padding:"8px 14px",fontSize:15,fontWeight:800,cursor:"pointer",minWidth:90}}>
+              {years.map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+            <button onClick={()=>setSelYear(y=>y+1)} disabled={atCurrentYear} style={{...navBtn,opacity:atCurrentYear?0.3:1,cursor:atCurrentYear?"not-allowed":"pointer"}}>›</button>
+            {!atCurrentYear && <button onClick={()=>setSelYear(curYear)} style={resetBtn}>Année actuelle</button>}
+          </>
+        ) : (
+          <>
+            <button onClick={prevMonth} style={navBtn}>‹</button>
+            <div style={{display:"flex",gap:8}}>
+              <select value={selMonth} onChange={e=>setSelMonth(Number(e.target.value))} style={{...c.input,padding:"8px 12px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:120}}>
+                {MONTHS.map((m,i)=><option key={i} value={i} disabled={selYear===curYear&&i>curMonth}>{m}</option>)}
+              </select>
+              <select value={selYear} onChange={e=>setSelYear(Number(e.target.value))} style={{...c.input,padding:"8px 12px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:80}}>
+                {years.map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <button onClick={nextMonth} disabled={atCurrentMonth} style={{...navBtn,opacity:atCurrentMonth?0.3:1,cursor:atCurrentMonth?"not-allowed":"pointer"}}>›</button>
+            {!atCurrentMonth && <button onClick={()=>{setSelMonth(curMonth);setSelYear(curYear);}} style={resetBtn}>Mois actuel</button>}
+          </>
+        )}
+      </div>
+
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:80}}><Spinner size={44}/></div> : (
+        <>
+          {/* KPIs */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))",gap:12,marginBottom:20}}>
+            {[
+              {label:"Chiffre d'affaires",val:totalCA,color:"#f0c987",icon:"◈"},
+              {label:"Nb commandes",val:periods.reduce((s,r)=>s+parseInt(r.total_orders||0),0),color:"#818cf8",icon:"⊞",isCt:true},
+              {label:"Panier moyen",val:periods.length?totalCA/Math.max(periods.reduce((s,r)=>s+parseInt(r.total_orders||0),0),1):0,color:"#34d399",icon:"◇"},
+              {label:"Total dépenses",val:totalDepenses,color:"#f87171",icon:"◻"},
+              {label:"Résultat net",val:resultat,color:resultat>=0?"#10b981":"#f87171",icon:resultat>=0?"▲":"▼"},
+              {label:"Remises accordées",val:periods.reduce((s,r)=>s+parseFloat(r.discounts||0),0),color:"#f59e0b",icon:"−"},
+            ].map(k=>(
+              <div key={k.label} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${k.color}44`,borderRadius:14,padding:"18px 16px",textAlign:"center"}}>
+                <div style={{fontSize:20,marginBottom:6}}>{k.icon}</div>
+                <div style={{fontSize:22,fontWeight:900,color:k.color}}>{k.isCt?k.val:fmtShort(k.val)}</div>
+                <div style={{fontSize:12,color:"#64748b",marginTop:3}}>{k.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Graphe CA */}
+          {periods.length>0 && (
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:15,padding:"20px",marginBottom:16}}>
+              <div style={c.cardTitle}>Évolution du CA — {periodLabel}</div>
+              <div style={{display:"flex",alignItems:"flex-end",gap:4,height:140,paddingTop:16}}>
+                {periods.map((r,i)=>{
+                  const val=parseFloat(r.revenue||0);
+                  return (
+                    <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                      <div style={{width:"100%",height:110,display:"flex",alignItems:"flex-end"}}>
+                        <div className="bar-item" style={{width:"100%",height:`${(val/maxBar)*100}%`,background:"linear-gradient(180deg,#f0c987,#e8a44e)",borderRadius:"4px 4px 0 0",minHeight:3,position:"relative"}}>
+                          <div className="bar-tooltip" style={{display:"none",position:"absolute",top:-24,left:"50%",transform:"translateX(-50%)",background:"#1e2433",padding:"3px 8px",borderRadius:6,fontSize:11,color:"#f0c987",fontWeight:700,whiteSpace:"nowrap",zIndex:10}}>{fmtShort(val)}</div>
+                        </div>
+                      </div>
+                      <div style={{fontSize:9,color:"#475569",textAlign:"center"}}>{monthName(r.period)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {periods.length===0 && <EmptyState icon="▦" text={`Aucune vente pour ${periodLabel}`}/>}
+
+          {/* Ligne : paiements + employés */}
+          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:14,marginBottom:14}}>
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"18px"}}>
+              <div style={c.cardTitle}>Par moyen de paiement</div>
+              {by_payment.length===0 ? <EmptyState text="Aucune donnée"/> : by_payment.map(pb=>{
+                const pct=(parseFloat(pb.total)/totalByPay)*100;
+                return (
+                  <div key={pb.method} style={{marginBottom:14}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:5,fontSize:13}}>
+                      <span>{payLabels[pb.method]||pb.method}</span>
+                      <span style={{fontWeight:800,color:payColors[pb.method]||"#888"}}>{fmtShort(parseFloat(pb.total))}</span>
+                    </div>
+                    <div style={{height:5,borderRadius:4,background:"rgba(255,255,255,0.06)"}}>
+                      <div style={{width:`${pct}%`,height:"100%",borderRadius:4,background:payColors[pb.method]||"#888"}}/>
+                    </div>
+                    <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{pct.toFixed(1)}% · {pb.count} ventes</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"18px"}}>
+              <div style={c.cardTitle}>Par employé</div>
+              {by_employee.length===0 ? <EmptyState text="Aucune donnée"/> : by_employee.map((emp,i)=>{
+                const empColor=emp.color||["#f0c987","#818cf8","#34d399","#f472b6"][i%4];
+                return (
+                  <div key={emp.id} style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+                    <div style={{width:38,height:38,borderRadius:"50%",border:`2px solid ${empColor}66`,background:empColor+"22",color:empColor,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:900,flexShrink:0}}>
+                      {(emp.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)}
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>{emp.name}</div>
+                      <div style={{height:4,borderRadius:3,background:"rgba(255,255,255,0.06)"}}>
+                        <div style={{width:`${(parseFloat(emp.revenue)/maxEmpCA)*100}%`,height:"100%",borderRadius:3,background:empColor}}/>
+                      </div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0}}>
+                      <div style={{fontSize:14,fontWeight:800,color:empColor}}>{fmtShort(parseFloat(emp.revenue||0))}</div>
+                      <div style={{fontSize:11,color:"#64748b"}}>{emp.total_orders} ventes</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Dépenses par catégorie */}
+          {totalDepenses>0 && (
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(248,113,113,0.2)",borderRadius:14,padding:"18px",marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div style={c.cardTitle}>Dépenses par catégorie</div>
+                <span style={{fontSize:15,fontWeight:900,color:"#f87171"}}>{fmtShort(totalDepenses)}</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}}>
+                {Object.entries(depByCategory).sort((a,b)=>b[1]-a[1]).map(([cat,val])=>{
+                  const pct=(val/totalDepenses)*100;
+                  const catColors={"Matériel":"#818cf8","Loyer":"#f87171","Stock":"#34d399","Salaires":"#f59e0b","Services":"#60a5fa","Autre":"#94a3b8"};
+                  const col=catColors[cat]||"#94a3b8";
+                  return (
+                    <div key={cat} style={{background:"rgba(255,255,255,0.02)",border:`1px solid ${col}22`,borderRadius:10,padding:"12px 14px"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                        <span style={{fontSize:12,color:col,fontWeight:700}}>{cat}</span>
+                        <span style={{fontSize:12,color:"#64748b"}}>{pct.toFixed(0)}%</span>
+                      </div>
+                      <div style={{fontSize:16,fontWeight:900,color:"#f8fafc"}}>{fmtShort(val)}</div>
+                      <div style={{height:3,borderRadius:2,background:"rgba(255,255,255,0.06)",marginTop:8}}>
+                        <div style={{width:`${pct}%`,height:"100%",borderRadius:2,background:col}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Résultat net */}
+          <div style={{background:resultat>=0?"rgba(16,185,129,0.06)":"rgba(248,113,113,0.06)",border:`1px solid ${resultat>=0?"rgba(16,185,129,0.25)":"rgba(248,113,113,0.25)"}`,borderRadius:14,padding:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontSize:13,color:"#64748b",marginBottom:4}}>Résultat net {periodLabel}</div>
+              <div style={{fontSize:12,color:"#475569"}}>CA {fmtShort(totalCA)} − Dépenses {fmtShort(totalDepenses)}</div>
+            </div>
+            <div style={{fontSize:28,fontWeight:900,color:resultat>=0?"#10b981":"#f87171"}}>{resultat>=0?"+":""}{fmtShort(resultat)}</div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE RECETTES — liste des ventes mois par mois basée sur order_date
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageRecettes({ toast }) {
+  const now0    = new Date();
+  const curYear = now0.getFullYear();
+  const curMonth= now0.getMonth();
+  const MONTHS  = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  const years   = Array.from({length:5},(_,i)=>curYear-i);
+
+  const [orders,    setOrders]   = useState([]);
+  const [loading,   setLoading]  = useState(true);
+  const [selMonth,  setSelMonth] = useState(curMonth);
+  const [selYear,   setSelYear]  = useState(curYear);
+  const [search,    setSearch]   = useState("");
+  const [exporting, setExporting]= useState(false);
+  const [editOrder, setEditOrder]= useState(null);   // commande en cours d'édition
+  const [editForm,  setEditForm] = useState({});
+  const [saving,    setSaving]   = useState(false);
+  const [customers, setCustomers]= useState([]);
+  const [employees, setEmployees]= useState([]);
+  const [custSearch,setCustSearch]=useState("");
+  const [custList,  setCustList] = useState([]);
+  const { isMobile } = useBreakpoint();
+
+  const from = `${selYear}-${String(selMonth+1).padStart(2,"0")}-01`;
+  const lastDay = new Date(selYear, selMonth+1, 0).getDate();
+  const to   = `${selYear}-${String(selMonth+1).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
+
+  const atCurrentMonth = selYear===curYear && selMonth===curMonth;
+  const prevMonth = () => { if(selMonth===0){setSelMonth(11);setSelYear(y=>y-1);}else setSelMonth(m=>m-1); };
+  const nextMonth = () => {
+    if(atCurrentMonth) return;
+    if(selMonth===11){setSelMonth(0);setSelYear(y=>y+1);}else setSelMonth(m=>m+1);
+  };
+
+  const load = useCallback(async (month, year) => {
+    setLoading(true);
+    try {
+      const f = `${year}-${String(month+1).padStart(2,"0")}-01`;
+      const ld = new Date(year, month+1, 0).getDate();
+      const t = `${year}-${String(month+1).padStart(2,"0")}-${String(ld).padStart(2,"0")}`;
+      const [oRes, eRes] = await Promise.all([
+        GET(`/orders?from=${f}&to=${t}&limit=500&date_field=order_date`),
+        GET(`/employees`),
+      ]);
+      setOrders(oRes.data||[]);
+      setEmployees(eRes.data||[]);
+    } catch(e) { toast(e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(()=>{ load(selMonth, selYear); }, [selMonth, selYear]);
+
+  // Autocomplete client
+  useEffect(()=>{
+    if(custSearch.length<2){setCustList([]);return;}
+    const t=setTimeout(async()=>{ try{const r=await GET(`/customers?search=${encodeURIComponent(custSearch)}&limit=8`);setCustList(r.data||[]);}catch{} },300);
+    return()=>clearTimeout(t);
+  },[custSearch]);
+
+  const openEdit = (order) => {
+    setEditOrder(order);
+    setEditForm({
+      order_date: (order.order_date||order.created_at||"").split("T")[0],
+      notes:      order.notes||"",
+      discount_amount: order.discount_amount||0,
+      customer_id:   order.customer_id||"",
+      customer_name: order.customer_name||"",
+      employee_id:   order.employee_id||"",
+      employee_name: order.employee_name||"",
+    });
+    setCustSearch(""); setCustList([]);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await PUT(`/orders/${editOrder.id}`, {
+        order_date:      editForm.order_date,
+        notes:           editForm.notes||undefined,
+        discount_amount: parseFloat(editForm.discount_amount)||0,
+        customer_id:     editForm.customer_id||undefined,
+        employee_id:     editForm.employee_id||undefined,
+      });
+      toast("Vente mise à jour","success");
+      setEditOrder(null);
+      await load(selMonth, selYear);
+    } catch(e) { toast(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (order) => {
+    if(!window.confirm(`Supprimer la vente ${order.order_number||"#"+order.id} (${fmt(order.total)}) ?`)) return;
+    try {
+      await DELETE(`/orders/${order.id}`);
+      toast("Vente supprimée","success");
+      await load(selMonth, selYear);
+    } catch(e) { toast(e.message); }
+  };
+
+  const PMTS = {card:"💳 Carte",cash:"💵 Espèces",treatwell:"🌿 Treatwell",planity:"📅 Planity",contactless:"📲 Sans contact",check:"🖊 Chèque",mixed:"⟡ Multi"};
+  const PMT_COLORS = {card:"#6366f1",cash:"#10b981",treatwell:"#8b5cf6",planity:"#f59e0b",contactless:"#38bdf8",check:"#94a3b8",mixed:"#64748b"};
+
+  const filtered = orders.filter(o => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (o.order_number||"").toLowerCase().includes(q)
+      || (o.customer_name||"").toLowerCase().includes(q)
+      || (o.employee_name||"").toLowerCase().includes(q);
+  });
+
+  const totalCA     = filtered.reduce((s,o)=>s+parseFloat(o.total||0),0);
+  const totalRemises= filtered.reduce((s,o)=>s+parseFloat(o.discount_amount||0),0);
+
+  const exportCSV = () => {
+    setExporting(true);
+    try {
+      const rows = [
+        `"Recettes — ${MONTHS[selMonth]} ${selYear}"`,
+        "",
+        '"Date";"N° commande";"Client";"Employé";"Paiement";"Sous-total (€)";"Remise (€)";"Total (€)"',
+        ...filtered.map(o =>
+          `"${fmtDate(o.order_date||o.created_at)}";"${o.order_number||o.id}";"${o.customer_name||""}";"${o.employee_name||""}";"${o.payment_method||""}";"${parseFloat(o.subtotal||0).toFixed(2)}";"${parseFloat(o.discount_amount||0).toFixed(2)}";"${parseFloat(o.total||0).toFixed(2)}"`
+        ),
+        "",
+        `"TOTAL";"";"";"";"";"";"";"${totalCA.toFixed(2)}"`,
+      ];
+      const blob = new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8;"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href=url; a.download=`recettes_${selYear}-${String(selMonth+1).padStart(2,"0")}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch(e) { toast("Erreur export"); }
+    finally { setExporting(false); }
+  };
+
+  return (
+    <div style={c.page}>
+      <div style={c.pageHeader}>
+        <div>
+          <div style={c.pageTitle}>Recettes</div>
+          <div style={c.pageSub}>{MONTHS[selMonth]} {selYear} — <span style={{color:"#f0c987",fontWeight:800}}>{fmt(totalCA)}</span></div>
+        </div>
+        <button onClick={exportCSV} disabled={exporting||loading}
+          style={{padding:"10px 18px",borderRadius:10,border:"1px solid rgba(255,255,255,0.12)",background:"rgba(255,255,255,0.05)",color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7,fontFamily:"inherit"}}>
+          {exporting?<Spinner size={14}/>:"↓"} Export CSV
+        </button>
+      </div>
+
+      {/* Sélecteur mois */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+        <button onClick={prevMonth} style={navBtn}>‹</button>
+        <div style={{display:"flex",gap:8}}>
+          <select value={selMonth} onChange={e=>setSelMonth(Number(e.target.value))}
+            style={{...c.input,padding:"8px 12px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:120}}>
+            {MONTHS.map((m,i)=><option key={i} value={i} disabled={selYear===curYear&&i>curMonth}>{m}</option>)}
+          </select>
+          <select value={selYear} onChange={e=>setSelYear(Number(e.target.value))}
+            style={{...c.input,padding:"8px 12px",fontSize:14,fontWeight:700,cursor:"pointer",minWidth:80}}>
+            {years.map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <button onClick={nextMonth} disabled={atCurrentMonth}
+          style={{...navBtn,opacity:atCurrentMonth?0.3:1,cursor:atCurrentMonth?"not-allowed":"pointer"}}>›</button>
+        {!atCurrentMonth && (
+          <button onClick={()=>{setSelMonth(curMonth);setSelYear(curYear);}} style={resetBtn}>Mois actuel</button>
+        )}
+        <div style={{marginLeft:"auto",fontSize:13,color:"#64748b"}}>{filtered.length} vente{filtered.length!==1?"s":""}</div>
+      </div>
+
+      {/* KPIs */}
+      {!loading && orders.length>0 && (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10,marginBottom:16}}>
+          {[
+            {label:"Total CA",    val:totalCA,     color:"#f0c987"},
+            {label:"Nb ventes",   val:filtered.length,color:"#818cf8",isCt:true},
+            {label:"Panier moyen",val:filtered.length?totalCA/filtered.length:0,color:"#34d399"},
+            {label:"Remises",     val:totalRemises,color:"#f87171"},
+          ].map(k=>(
+            <div key={k.label} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${k.color}33`,borderRadius:12,padding:"14px",textAlign:"center"}}>
+              <div style={{fontSize:18,fontWeight:900,color:k.color}}>{k.isCt?k.val:fmt(k.val)}</div>
+              <div style={{fontSize:11,color:"#64748b",marginTop:3}}>{k.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Recherche */}
+      <div style={{position:"relative",marginBottom:14}}>
+        <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#475569",pointerEvents:"none"}}>🔍</span>
+        <input style={{...c.input,width:"100%",paddingLeft:34,fontSize:13}}
+          placeholder="Rechercher par n° commande, client, employé…"
+          value={search} onChange={e=>setSearch(e.target.value)}/>
+        {search && <button onClick={()=>setSearch("")} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:14}}>✕</button>}
+      </div>
+
+      {loading ? <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={36}/></div>
+        : filtered.length===0 ? <EmptyState icon="◑" text="Aucune vente ce mois"/>
+        : (
+          <div style={c.table}>
+            {!isMobile && (
+              <div style={c.tableHead}>
+                <span style={{flex:0.8}}>Date</span>
+                <span style={{flex:1}}>N° commande</span>
+                <span style={{flex:1.4}}>Client</span>
+                <span style={{flex:1.2}}>Employé</span>
+                <span style={{flex:1}}>Paiement</span>
+                <span style={{flex:0.8,textAlign:"right"}}>Remise</span>
+                <span style={{flex:1,textAlign:"right"}}>Total</span>
+                <span style={{flex:0.5,textAlign:"right"}}>Actions</span>
+              </div>
+            )}
+            {filtered.map(order => {
+              const pmtColor = PMT_COLORS[order.payment_method]||"#64748b";
+              const dateStr  = fmtDate(order.order_date||order.created_at);
+              return (
+                <div key={order.id} style={{...c.tableRow,flexDirection:isMobile?"column":"row",gap:isMobile?6:0,alignItems:isMobile?"flex-start":"center"}}>
+                  {isMobile ? (
+                    <>
+                      <div style={{display:"flex",justifyContent:"space-between",width:"100%",alignItems:"center"}}>
+                        <span style={{fontSize:12,color:"#64748b"}}>{dateStr}</span>
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          <span style={{fontWeight:900,color:"#f0c987",fontSize:16}}>{fmt(order.total)}</span>
+                          <button style={c.iconBtn} onClick={()=>openEdit(order)}>✎</button>
+                          <button style={{...c.iconBtn,color:"#f87171"}} onClick={()=>handleDelete(order)}>✕</button>
+                        </div>
+                      </div>
+                      <div style={{fontSize:14,fontWeight:700}}>{order.order_number||`#${order.id}`}</div>
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                        {order.customer_name && <span style={{fontSize:12,color:"#94a3b8"}}>◉ {order.customer_name}</span>}
+                        {order.employee_name && <span style={{fontSize:12,color:"#818cf8"}}>⟡ {order.employee_name}</span>}
+                        <span style={{fontSize:11,padding:"2px 8px",borderRadius:20,background:pmtColor+"18",color:pmtColor,fontWeight:600}}>{PMTS[order.payment_method]||order.payment_method||"—"}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{flex:0.8,fontSize:13,color:"#64748b"}}>{dateStr}</span>
+                      <span style={{flex:1,fontSize:13,fontWeight:700,color:"#94a3b8"}}>{order.order_number||`#${order.id}`}</span>
+                      <span style={{flex:1.4,fontSize:14}}>{order.customer_name||<span style={{color:"#334155"}}>—</span>}</span>
+                      <span style={{flex:1.2,fontSize:13,color:"#818cf8"}}>{order.employee_name||<span style={{color:"#334155"}}>—</span>}</span>
+                      <span style={{flex:1}}><span style={{fontSize:12,padding:"3px 9px",borderRadius:20,background:pmtColor+"18",color:pmtColor,fontWeight:600}}>{PMTS[order.payment_method]||order.payment_method||"—"}</span></span>
+                      <span style={{flex:0.8,textAlign:"right",fontSize:13,color:"#f59e0b"}}>{parseFloat(order.discount_amount||0)>0?"−"+fmt(order.discount_amount):"—"}</span>
+                      <span style={{flex:1,textAlign:"right",fontWeight:900,fontSize:15,color:"#f0c987"}}>{fmt(order.total)}</span>
+                      <span style={{flex:0.5,display:"flex",gap:6,justifyContent:"flex-end"}}>
+                        <button style={c.iconBtn} onClick={()=>openEdit(order)}>✎</button>
+                        <button style={{...c.iconBtn,color:"#f87171"}} onClick={()=>handleDelete(order)}>✕</button>
+                      </span>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            <div style={{display:"flex",justifyContent:"space-between",padding:"12px 16px",borderTop:"1px solid rgba(255,255,255,0.08)",marginTop:4}}>
+              <span style={{fontSize:13,fontWeight:700,color:"#64748b"}}>{filtered.length} vente{filtered.length!==1?"s":""}</span>
+              {totalRemises>0 && <span style={{fontSize:13,color:"#f59e0b"}}>Remises : −{fmt(totalRemises)}</span>}
+              <span style={{fontWeight:900,fontSize:16,color:"#f0c987"}}>{fmt(totalCA)}</span>
+            </div>
+          </div>
+        )
+      }
+
+      {/* Modal modification vente */}
+      {editOrder && (
+        <Modal title={`Modifier la vente ${editOrder.order_number||"#"+editOrder.id}`} onClose={()=>setEditOrder(null)}>
+          {/* Récap non modifiable */}
+          <div style={{background:"rgba(255,255,255,0.03)",borderRadius:10,padding:"12px 14px",marginBottom:18,fontSize:13,color:"#64748b"}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <span>Total encaissé</span>
+              <span style={{fontWeight:900,color:"#f0c987",fontSize:16}}>{fmt(editOrder.total)}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span>Paiement</span>
+              <span style={{color:"#94a3b8"}}>{PMTS[editOrder.payment_method]||editOrder.payment_method||"—"}</span>
+            </div>
+          </div>
+
+          <div style={c.formGrid}>
+            {/* Date */}
+            <div style={{...c.formGroup,gridColumn:"1/-1"}}>
+              <label style={c.label}>Date de la vente</label>
+              <input type="date" style={c.input} value={editForm.order_date}
+                max={new Date().toISOString().split("T")[0]}
+                onChange={e=>setEditForm(f=>({...f,order_date:e.target.value}))}/>
+            </div>
+
+            {/* Client */}
+            <div style={{...c.formGroup,gridColumn:"1/-1"}}>
+              <label style={c.label}>Client</label>
+              {editForm.customer_id ? (
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:10,background:"rgba(240,201,135,0.08)",border:"1px solid rgba(240,201,135,0.2)"}}>
+                  <span style={c.avatar}>{(editForm.customer_name||"?")[0]}</span>
+                  <span style={{flex:1,fontSize:14,fontWeight:600}}>{editForm.customer_name}</span>
+                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:16}} onClick={()=>setEditForm(f=>({...f,customer_id:"",customer_name:""}))}>✕</button>
+                </div>
+              ) : (
+                <div style={{position:"relative"}}>
+                  <input style={c.input} placeholder="Rechercher un client…"
+                    value={custSearch} onChange={e=>setCustSearch(e.target.value)}/>
+                  {custList.length>0 && (
+                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:30,overflow:"hidden",boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
+                      {custList.map(cl=>(
+                        <div key={cl.id} style={{padding:"10px 14px",cursor:"pointer",fontSize:14,display:"flex",justifyContent:"space-between"}}
+                          onMouseDown={e=>{e.preventDefault();setEditForm(f=>({...f,customer_id:cl.id,customer_name:cl.name}));setCustSearch("");setCustList([]);}}
+                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.05)"}
+                          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <span style={{fontWeight:600}}>{cl.name}</span>
+                          <span style={{color:"#64748b",fontSize:12}}>{cl.phone}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Employé */}
+            <div style={{...c.formGroup,gridColumn:"1/-1"}}>
+              <label style={c.label}>Employé</label>
+              <select style={c.input} value={editForm.employee_id}
+                onChange={e=>{
+                  const emp = employees.find(em=>String(em.id)===e.target.value);
+                  setEditForm(f=>({...f,employee_id:e.target.value,employee_name:emp?.name||""}));
+                }}>
+                <option value="">— Aucun —</option>
+                {employees.map(emp=><option key={emp.id} value={emp.id}>{emp.name}</option>)}
+              </select>
+            </div>
+
+            {/* Remise */}
+            <div style={c.formGroup}>
+              <label style={c.label}>Remise (€)</label>
+              <input type="number" min="0" step="0.01" style={c.input}
+                value={editForm.discount_amount}
+                onChange={e=>setEditForm(f=>({...f,discount_amount:e.target.value}))}/>
+            </div>
+
+            {/* Notes */}
+            <div style={c.formGroup}>
+              <label style={c.label}>Notes</label>
+              <input style={c.input} placeholder="Remarques…"
+                value={editForm.notes}
+                onChange={e=>setEditForm(f=>({...f,notes:e.target.value}))}/>
+            </div>
+          </div>
+          <ModalActions onCancel={()=>setEditOrder(null)} onSave={handleSave} saving={saving}/>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE ENCAISSEMENT — layout CSS Grid 100% responsive
+// ═══════════════════════════════════════════════════════════════════════════════
+function PageEncaissement({ toast }) {
+  const [screen, setScreen]           = useState("caisse");
+  const [categories, setCategories]   = useState([]);
+  const [services, setServices]       = useState([]);
+  const [customers, setCustomers]     = useState([]);
+  const [employees, setEmployees]     = useState([]);
+  const [activeCategory, setActiveCategory] = useState("all");
+  const [serviceSearch, setServiceSearch]   = useState("");
+  const [cart, setCart]               = useState([]);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [customerSearch, setCustomerSearch]     = useState("");
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [employeeSearch, setEmployeeSearch]     = useState("");
+  const [discount, setDiscount]       = useState("");
+  const [additionalFees, setAdditionalFees]     = useState("");
+  const [feesType, setFeesType]       = useState("add");
+  const [paymentLines, setPaymentLines] = useState([{id:1,key:"card",amount:""}]);
+  const [loading, setLoading]         = useState(true);
+  const [submitting, setSubmitting]   = useState(false);
+  const [successData, setSuccessData] = useState(null);
+  const [notes, setNotes]             = useState("");
+  const [orderDate, setOrderDate]     = useState(new Date().toISOString().split("T")[0]);
+  const [catOpen, setCatOpen]         = useState(false);
+  const { isMobile, isTablet, w }     = useBreakpoint();
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      try {
+        const [sRes,cRes,eRes] = await Promise.all([
+          GET("/products?limit=500"),
+          GET("/categories"),
+          GET("/employees"),
+        ]);
+        setServices(sRes.data); setCategories(cRes.data); setEmployees(eRes.data);
+      } catch(e) { toast(e.message); }
+      finally { setLoading(false); }
+    })();
+  },[]);
+
+  useEffect(()=>{
+    if (customerSearch.length<2) { setCustomers([]); return; }
+    const t = setTimeout(async()=>{ try { const res=await GET(`/customers?search=${encodeURIComponent(customerSearch)}&limit=10`); setCustomers(res.data); } catch{} },300);
+    return ()=>clearTimeout(t);
+  },[customerSearch]);
+
+  const allCats = [{id:"all",name:"Tout",color:"#f0c987",icon:"✦"},...categories];
+  const filtered = (activeCategory==="all" ? services : services.filter(s=>s.category_id===activeCategory))
+    .filter(s => !serviceSearch || s.name.toLowerCase().includes(serviceSearch.toLowerCase()));
+  const filteredEmps = employees.filter(e => !employeeSearch || e.name.toLowerCase().includes(employeeSearch.toLowerCase()));
+
+  const addToCart = (sv) => setCart(prev=>{
+    const ex=prev.find(i=>i.id===sv.id);
+    if (ex) return prev.map(i=>i.id===sv.id?{...i,qty:i.qty+1}:i);
+    return [...prev,{...sv,qty:1}];
+  });
+  const removeFromCart  = (id) => setCart(prev=>{ const item=prev.find(i=>i.id===id); if(item.qty>1) return prev.map(i=>i.id===id?{...i,qty:i.qty-1}:i); return prev.filter(i=>i.id!==id); });
+  const deleteFromCart  = (id) => setCart(prev=>prev.filter(i=>i.id!==id));
+
+  const subtotal       = cart.reduce((s,i)=>s+i.price*i.qty,0);
+  const discountAmount = discount ? subtotal*(parseFloat(discount)/100) : 0;
+  const feesVal        = parseFloat(additionalFees)||0;
+  const feesAmount     = feesType==="add" ? feesVal : -feesVal;
+  const total          = Math.max(0,subtotal-discountAmount+feesAmount);
+  const usedKeys       = paymentLines.map(p=>p.key);
+  const availMethods   = PAYMENT_METHODS.filter(m=>!usedKeys.includes(m.key));
+  const totalPaid      = paymentLines.reduce((s,p)=>s+(parseFloat(p.amount)||0),0);
+  const remaining      = total-totalPaid;
+  const cashPaid       = parseFloat(paymentLines.find(p=>p.key==="cash")?.amount)||0;
+  const nonCashPaid    = paymentLines.filter(p=>p.key!=="cash").reduce((s,p)=>s+(parseFloat(p.amount)||0),0);
+  const changeDue      = cashPaid>0 ? Math.max(0,cashPaid+nonCashPaid-total) : 0;
+  const canCheckout    = cart.length>0;
+  const canPay         = remaining<=0.005 && totalPaid>0;
+
+  const addPayLine    = () => { const av=PAYMENT_METHODS.find(m=>!usedKeys.includes(m.key)); if(!av)return; setPaymentLines(prev=>[...prev,{id:Date.now(),key:av.key,amount:""}]); };
+  const removePayLine = (id) => setPaymentLines(prev=>prev.filter(p=>p.id!==id));
+  const updateLine    = (id,field,val) => setPaymentLines(prev=>prev.map(p=>p.id===id?{...p,[field]:val}:p));
+  const setExact      = (id) => { const other=paymentLines.filter(p=>p.id!==id).reduce((s,p)=>s+(parseFloat(p.amount)||0),0); updateLine(id,"amount",Math.max(0,total-other).toFixed(2)); };
+
+  const handleEncaisser = async () => {
+    setSubmitting(true);
+    try {
+      const res = await POST("/orders",{
+        customer_id:  selectedCustomer?.id||undefined,
+        employee_id:  selectedEmployee?.id||undefined,
+        order_date:   orderDate,
+        items: cart.map(i=>({product_id:i.id,quantity:i.qty,discount:0})),
+        discount_amount: discountAmount,
+        additionnal_fees: feesAmount,
+        notes: notes||undefined,
+        payment_breakdown: paymentLines.filter(p=>(parseFloat(p.amount)||0)>0).map(p=>({method:p.key,amount:parseFloat(p.amount)})),
+      });
+      setSuccessData(res.data); setScreen("success");
+    } catch(e) { toast(e.message); }
+    finally { setSubmitting(false); }
+  };
+
+  const reset = () => {
+    setCart([]); setDiscount(""); setAdditionalFees(""); setFeesType("add");
+    setPaymentLines([{id:1,key:"card",amount:""}]);
+    setSuccessData(null); setNotes(""); setServiceSearch("");
+    setSelectedCustomer(null); setCustomerSearch("");
+    setSelectedEmployee(null); setEmployeeSearch("");
+    setOrderDate(new Date().toISOString().split("T")[0]);
+    setScreen("caisse");
+  };
+
+  // ── ÉCRAN CAISSE ──────────────────────────────────────────────────────────
+  if (screen==="caisse") return (
+    <div className="caisse-root">
+      {/* ── Catégories : colonne gauche desktop, barre top mobile ── */}
+      <aside className="caisse-cats">
+        <div className="caisse-cats-title">Catégories</div>
+        {loading ? <div style={{padding:16,display:"flex",justifyContent:"center"}}><Spinner size={20}/></div>
+          : allCats.map(cat => {
+          const active = activeCategory===cat.id;
+          return (
+            <button key={cat.id} className={`caisse-cat-btn${active?" active":""}`}
+              style={active?{background:(cat.color||"#f0c987")+"18",color:cat.color||"#f0c987",borderColor:(cat.color||"#f0c987")+"44"}:{}}
+              onClick={()=>setActiveCategory(cat.id)}>
+              <span className="caisse-cat-icon">{cat.icon||"✦"}</span>
+              <span className="caisse-cat-label">{cat.name}</span>
+              {active && <span className="caisse-cat-dot" style={{background:cat.color||"#f0c987"}}/>}
+            </button>
+          );
+        })}
+      </aside>
+
+      {/* ── Grille prestations ── */}
+      <main className="caisse-main">
+        {/* Barre de recherche */}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,flexShrink:0}}>
+          <div style={{position:"relative",flex:1}}>
+            <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#475569",pointerEvents:"none"}}>🔍</span>
+            <input style={{...c.input,width:"100%",padding:"9px 36px 9px 34px",fontSize:13}}
+              placeholder="Rechercher une prestation…"
+              value={serviceSearch}
+              onChange={e=>setServiceSearch(e.target.value)}/>
+            {serviceSearch && (
+              <button onClick={()=>setServiceSearch("")}
+                style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:14,lineHeight:1,padding:0}}>✕</button>
+            )}
+          </div>
+          <span style={{fontSize:12,color:"#475569",whiteSpace:"nowrap",flexShrink:0}}>{filtered.length} résultat{filtered.length!==1?"s":""}</span>
+        </div>
+        {loading
+          ? <div style={{display:"flex",justifyContent:"center",padding:40}}><Spinner/></div>
+          : filtered.length===0
+            ? <EmptyState text={serviceSearch ? `Aucun résultat pour « ${serviceSearch} »` : "Aucune prestation dans cette catégorie"}/>
+            : <div className="caisse-grid">
+                {filtered.map(sv=>{
+                  const inCart = cart.find(i=>i.id===sv.id);
+                  const color  = sv.category_color||"#f0c987";
+                  return (
+                    <button key={sv.id} className="caisse-service-btn service-btn"
+                      style={inCart?{borderColor:color+"66",background:color+"10"}:{}}
+                      onClick={()=>addToCart(sv)}>
+                      {inCart && <span className="caisse-badge" style={{background:color,color:"#0a0d14"}}>{inCart.qty}</span>}
+                      <span className="caisse-sv-name" style={inCart?{paddingRight:24}:{}}>{sv.name}</span>
+                      <span className="caisse-sv-price" style={{color}}>{fmt(sv.price)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+        }
+      </main>
+
+      {/* ── Récap panier — toujours à droite ── */}
+      <aside className="caisse-recap">
+        <div className="caisse-recap-header">
+          <span className="caisse-recap-title">Panier</span>
+          {cart.length>0 && <button className="caisse-vider-btn" onClick={()=>setCart([])}>Vider</button>}
+        </div>
+
+        <div className="caisse-recap-items">
+          {cart.length===0
+            ? <div className="caisse-empty-cart">
+                <div style={{fontSize:32,opacity:0.2,marginBottom:8}}>◈</div>
+                <div>Aucune prestation</div>
+                <div style={{fontSize:12,color:"#334155",marginTop:3}}>Sélectionnez dans la grille</div>
+              </div>
+            : cart.map(item=>(
+                <div key={item.id} className="caisse-cart-item">
+                  <div className="caisse-cart-info">
+                    <div className="caisse-cart-name">{item.name}</div>
+                    {item.duration && <div className="caisse-cart-sub">{item.duration} · {fmt(item.price)}</div>}
+                  </div>
+                  <div className="caisse-cart-controls">
+                    <button className="caisse-qty-btn" onClick={()=>removeFromCart(item.id)}>−</button>
+                    <span className="caisse-qty-val">{item.qty}</span>
+                    <button className="caisse-qty-btn" onClick={()=>addToCart(item)}>+</button>
+                  </div>
+                  <div className="caisse-cart-total">{fmt(item.price*item.qty)}</div>
+                  <button className="caisse-del-btn" onClick={()=>deleteFromCart(item.id)}>✕</button>
+                </div>
+              ))
+          }
+        </div>
+
+        <div className="caisse-recap-footer">
+          <div className="caisse-total-row">
+            <span style={{color:"#94a3b8"}}>Sous-total</span>
+            <span>{fmt(subtotal)}</span>
+          </div>
+          <div className="caisse-divider"/>
+          <div className="caisse-total-row" style={{fontWeight:800,fontSize:"clamp(15px,1.4vw,18px)"}}>
+            <span>Total</span>
+            <span style={{color:"#f0c987",fontSize:"clamp(18px,1.8vw,22px)"}}>{fmt(subtotal)}</span>
+          </div>
+          <button
+            className={`caisse-checkout-btn checkout-btn${canCheckout?"":" disabled"}`}
+            disabled={!canCheckout}
+            onClick={()=>setScreen("paiement")}>
+            Encaisser →
+          </button>
+        </div>
+      </aside>
+    </div>
+  );
+
+  // ── ÉCRAN PAIEMENT ────────────────────────────────────────────────────────
+  if (screen==="paiement") return (
+    <div style={{display:"flex",flex:1,height:`calc(100vh - ${isMobile?58:72}px)`,overflow:"hidden",flexDirection:isMobile?"column":"row"}}>
+      {/* Colonne gauche */}
+      <div style={{flex:1,padding:isMobile?"14px":"22px 26px",overflowY:"auto",borderRight:isMobile?"none":"1px solid rgba(255,255,255,0.06)"}}>
+        <button style={{background:"none",border:"1px solid rgba(255,255,255,0.08)",color:"#94a3b8",padding:"8px 14px",borderRadius:9,cursor:"pointer",fontSize:14,marginBottom:18}} onClick={()=>setScreen("caisse")}>← Retour</button>
+        <div style={{fontSize:isMobile?18:22,fontWeight:900,marginBottom:18}}>Finaliser la vente</div>
+
+        {/* Articles */}
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px",marginBottom:14}}>
+          <div style={c.cardTitle}>Prestations</div>
+          {cart.map(item=>(
+            <div key={item.id} style={{display:"flex",justifyContent:"space-between",fontSize:14,padding:"4px 0",color:"#cbd5e1"}}>
+              <span>{item.name}{item.qty>1&&<span style={{color:"#64748b",fontSize:12}}> ×{item.qty}</span>}</span>
+              <span style={{fontWeight:700}}>{fmt(item.price*item.qty)}</span>
+            </div>
+          ))}
+          <div style={{height:1,background:"rgba(255,255,255,0.06)",margin:"8px 0"}}/>
+          <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:15}}><span>Sous-total</span><span>{fmt(subtotal)}</span></div>
+        </div>
+
+        {/* Client, Employé & Notes */}
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px",marginBottom:14}}>
+          <div style={c.cardTitle}>Client & Employé</div>
+
+          {/* Date */}
+          <div style={{marginBottom:14}}>
+            <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Date de la vente</label>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <input type="date" style={{...c.input,flex:1}}
+                value={orderDate} max={new Date().toISOString().split("T")[0]}
+                onChange={e=>setOrderDate(e.target.value)}/>
+              {orderDate!==new Date().toISOString().split("T")[0] && (
+                <span style={{fontSize:12,color:"#f87171",fontWeight:700,padding:"5px 10px",borderRadius:8,background:"rgba(248,113,113,0.1)",border:"1px solid rgba(248,113,113,0.2)",flexShrink:0,whiteSpace:"nowrap"}}>⚠ Antidatée</span>
+              )}
+            </div>
+          </div>
+
+          {/* Sélecteur client */}
+          <div style={{marginBottom:14}}>
+            <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Client (optionnel)</label>
+            <div style={{position:"relative"}}>
+              {selectedCustomer ? (
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:10,background:"rgba(240,201,135,0.08)",border:"1px solid rgba(240,201,135,0.2)"}}>
+                  <span style={c.avatar}>{(selectedCustomer.name||"?")[0]}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{selectedCustomer.name}</div>
+                    {selectedCustomer.phone && <div style={{fontSize:12,color:"#64748b"}}>{selectedCustomer.phone}</div>}
+                  </div>
+                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:16,lineHeight:1}} onClick={()=>{setSelectedCustomer(null);setCustomerSearch("");}}>✕</button>
+                </div>
+              ) : (
+                <>
+                  <input style={{...c.input,width:"100%"}} placeholder="Rechercher un client…" value={customerSearch} onChange={e=>setCustomerSearch(e.target.value)}/>
+                  {customers.length>0 && (
+                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:30,overflow:"hidden",boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
+                      {customers.map(cl=>(
+                        <div key={cl.id} style={{padding:"11px 15px",cursor:"pointer",fontSize:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                          onMouseDown={e=>{e.preventDefault();setSelectedCustomer(cl);setCustomers([]);setCustomerSearch("");}}
+                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.05)"}
+                          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <span style={{fontWeight:600}}>{cl.name}</span>
+                          <span style={{color:"#64748b",fontSize:12}}>{cl.phone}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Sélecteur employé */}
+          <div style={{marginBottom:14}}>
+            <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Employé (optionnel)</label>
+            <div style={{position:"relative"}}>
+              {selectedEmployee ? (
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:10,background:(selectedEmployee.color||"#818cf8")+"12",border:`1px solid ${(selectedEmployee.color||"#818cf8")}44`}}>
+                  <div style={{width:32,height:32,borderRadius:"50%",background:(selectedEmployee.color||"#818cf8")+"22",color:selectedEmployee.color||"#818cf8",fontSize:12,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    {(selectedEmployee.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()}
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{selectedEmployee.name}</div>
+                    <div style={{fontSize:12,color:"#64748b",textTransform:"capitalize"}}>{selectedEmployee.role}</div>
+                  </div>
+                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:16,lineHeight:1}} onClick={()=>{setSelectedEmployee(null);setEmployeeSearch("");}}>✕</button>
+                </div>
+              ) : (
+                <>
+                  <input style={{...c.input,width:"100%"}} placeholder="Rechercher un employé…" value={employeeSearch} onChange={e=>setEmployeeSearch(e.target.value)}/>
+                  {filteredEmps.length>0 && (
+                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:30,overflow:"hidden",boxShadow:"0 8px 24px rgba(0,0,0,0.5)",maxHeight:220,overflowY:"auto"}}>
+                      {filteredEmps.map(emp=>(
+                        <div key={emp.id} style={{padding:"11px 15px",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",gap:12}}
+                          onMouseDown={e=>{e.preventDefault();setSelectedEmployee(emp);setEmployeeSearch("");}}
+                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.05)"}
+                          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <div style={{width:30,height:30,borderRadius:"50%",background:(emp.color||"#818cf8")+"22",color:emp.color||"#818cf8",fontSize:11,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                            {(emp.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()}
+                          </div>
+                          <span style={{fontWeight:600,flex:1}}>{emp.name}</span>
+                          <span style={{color:"#64748b",fontSize:12,textTransform:"capitalize"}}>{emp.role}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Notes (optionnel)</label>
+            <input style={{...c.input,width:"100%"}} placeholder="Remarques…" value={notes} onChange={e=>setNotes(e.target.value)}/>
+          </div>
+        </div>
+
+        {/* Ajustements */}
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px"}}>
+          <div style={c.cardTitle}>Ajustements</div>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+            <div style={{flex:"1 1 140px",display:"flex",flexDirection:"column",gap:7}}>
+              <label style={{fontSize:12,color:"#94a3b8",fontWeight:500}}>Réduction (%)</label>
+              <div style={{position:"relative",display:"flex",alignItems:"center"}}>
+                <input type="number" min="0" max="100" style={{...c.input,width:"100%",paddingRight:28}} value={discount} onChange={e=>setDiscount(e.target.value)} placeholder="0"/>
+                <span style={{position:"absolute",right:10,color:"#64748b",fontSize:13,pointerEvents:"none"}}>%</span>
+              </div>
+              {discountAmount>0 && <span style={{fontSize:13,color:"#f0c987",fontWeight:700}}>− {fmt(discountAmount)}</span>}
+            </div>
+            <div style={{flex:"1 1 160px",display:"flex",flexDirection:"column",gap:7}}>
+              <label style={{fontSize:12,color:"#94a3b8",fontWeight:500}}>Frais additionnels</label>
+              <div style={{display:"flex",gap:8}}>
+                <button style={{width:36,height:44,borderRadius:8,border:`1px solid ${feesType==="add"?"rgba(240,201,135,0.4)":"rgba(255,255,255,0.1)"}`,background:feesType==="add"?"rgba(240,201,135,0.15)":"transparent",color:feesType==="add"?"#f0c987":"#94a3b8",fontSize:18,cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>setFeesType("add")}>+</button>
+                <button style={{width:36,height:44,borderRadius:8,border:`1px solid ${feesType==="sub"?"rgba(240,201,135,0.4)":"rgba(255,255,255,0.1)"}`,background:feesType==="sub"?"rgba(240,201,135,0.15)":"transparent",color:feesType==="sub"?"#f0c987":"#94a3b8",fontSize:18,cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>setFeesType("sub")}>−</button>
+                <div style={{position:"relative",flex:1,display:"flex",alignItems:"center"}}>
+                  <input type="number" min="0" style={{...c.input,width:"100%",paddingRight:28}} value={additionalFees} onChange={e=>setAdditionalFees(e.target.value)} placeholder="0"/>
+                  <span style={{position:"absolute",right:10,color:"#64748b",fontSize:13,pointerEvents:"none"}}>€</span>
+                </div>
+              </div>
+              {feesVal>0 && <span style={{fontSize:13,color:"#f0c987",fontWeight:700}}>{feesType==="add"?"+":"−"} {fmt(feesVal)}</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Colonne droite */}
+      <div style={{width:isMobile?"100%":isTablet?"310px":"380px",flexShrink:0,padding:isMobile?"14px":"22px 20px",overflowY:"auto",display:"flex",flexDirection:"column",gap:14}}>
+        {/* Total */}
+        <div style={{background:"linear-gradient(135deg,rgba(240,201,135,0.12),rgba(232,164,78,0.08))",border:"1px solid rgba(240,201,135,0.25)",borderRadius:15,padding:"22px",textAlign:"center"}}>
+          <div style={{fontSize:12,color:"#94a3b8",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Total à encaisser</div>
+          <div style={{fontSize:isMobile?32:38,fontWeight:900,color:"#f0c987",letterSpacing:"-0.02em"}}>{fmt(total)}</div>
+          {(discountAmount>0||feesVal>0) && (
+            <div style={{display:"flex",justifyContent:"center",gap:8,marginTop:10,flexWrap:"wrap"}}>
+              {discountAmount>0 && <span style={{fontSize:12,color:"#94a3b8",background:"rgba(255,255,255,0.06)",padding:"4px 10px",borderRadius:20}}>Remise −{fmt(discountAmount)}</span>}
+              {feesVal>0 && <span style={{fontSize:12,color:"#94a3b8",background:"rgba(255,255,255,0.06)",padding:"4px 10px",borderRadius:20}}>{feesType==="add"?"+":"−"}{fmt(feesVal)}</span>}
+            </div>
+          )}
+        </div>
+
+        {/* Paiements */}
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div style={c.cardTitle}>Modes de paiement</div>
+            {availMethods.length>0 && <button style={{fontSize:12,color:"#f0c987",background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",borderRadius:8,padding:"5px 11px",cursor:"pointer",fontWeight:700}} onClick={addPayLine}>+ Ajouter</button>}
+          </div>
+          {paymentLines.map(line=>{
+            const method=PAYMENT_METHODS.find(m=>m.key===line.key);
+            const amt=parseFloat(line.amount)||0;
+            return (
+              <div key={line.id} style={{marginBottom:14,padding:"13px 14px",borderRadius:11,border:"1px solid rgba(255,255,255,0.07)",background:"rgba(255,255,255,0.02)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:11,flexWrap:"wrap"}}>
+                  {PAYMENT_METHODS.map(m=>(
+                    <button key={m.key} disabled={usedKeys.includes(m.key)&&m.key!==line.key}
+                      style={{padding:"6px 11px",borderRadius:8,border:`1px solid ${line.key===m.key?m.color:"rgba(255,255,255,0.1)"}`,background:line.key===m.key?m.color+"18":"transparent",color:line.key===m.key?m.color:"#64748b",fontSize:13,cursor:usedKeys.includes(m.key)&&m.key!==line.key?"not-allowed":"pointer",fontWeight:line.key===m.key?700:500,opacity:usedKeys.includes(m.key)&&m.key!==line.key?0.3:1}}
+                      onClick={()=>updateLine(line.id,"key",m.key)}>{m.icon} {m.label}</button>
+                  ))}
+                  {paymentLines.length>1 && <button style={{background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:13,marginLeft:"auto"}} onClick={()=>removePayLine(line.id)}>✕</button>}
+                </div>
+                <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                  <div style={{position:"relative",flex:1,display:"flex",alignItems:"center"}}>
+                    <input type="number" min="0" step="0.01"
+                      style={{width:"100%",padding:"12px 36px 12px 14px",borderRadius:9,border:`1px solid ${amt>0?(method?.color||"#f0c987"):"rgba(255,255,255,0.1)"}`,background:"rgba(255,255,255,0.05)",color:"#f8fafc",fontSize:isMobile?22:24,fontWeight:900,outline:"none",boxSizing:"border-box",transition:"border-color 0.2s"}}
+                      value={line.amount} onChange={e=>updateLine(line.id,"amount",e.target.value)} placeholder="0,00"/>
+                    <span style={{position:"absolute",right:12,color:"#64748b",fontSize:15,pointerEvents:"none"}}>€</span>
+                  </div>
+                  <button style={{padding:"9px 14px",borderRadius:9,border:`1px solid ${method?.color}`,background:"transparent",color:method?.color,fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}} onClick={()=>setExact(line.id)}>Solde</button>
+                </div>
+                {line.key==="cash"&&changeDue>0.005 && (
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,padding:"8px 12px",borderRadius:9,background:"rgba(16,185,129,0.1)",border:"1px solid rgba(16,185,129,0.2)"}}>
+                    <span style={{fontSize:13,color:"#10b981",fontWeight:600}}>Monnaie à rendre</span>
+                    <span style={{fontSize:18,fontWeight:900,color:"#10b981"}}>{fmt(changeDue)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Balance */}
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:11,padding:"13px 16px",display:"flex",flexDirection:"column",gap:7}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:14}}><span style={{color:"#94a3b8"}}>Total réglé</span><span style={{fontWeight:700}}>{fmt(totalPaid)}</span></div>
+          <div style={{height:1,background:"rgba(255,255,255,0.06)"}}/>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:800}}>
+            <span>Reste à régler</span>
+            <span style={{fontSize:isMobile?16:18,fontWeight:900,color:remaining>0.005?"#f87171":"#10b981"}}>{remaining>0.005?fmt(remaining):"✓ Soldé"}</span>
+          </div>
+        </div>
+
+        <button style={{padding:"15px",borderRadius:12,border:"none",background:canPay?"linear-gradient(135deg,#10b981,#059669)":"rgba(255,255,255,0.06)",color:canPay?"#fff":"#334155",fontWeight:900,fontSize:isMobile?15:16,cursor:canPay?"pointer":"not-allowed",boxShadow:canPay?"0 4px 24px rgba(16,185,129,0.35)":"none",transition:"all 0.2s",opacity:submitting?0.7:1}} className="encaisser-btn"
+          disabled={!canPay||submitting} onClick={handleEncaisser}>
+          {submitting ? <span style={{display:"flex",gap:8,justifyContent:"center",alignItems:"center"}}><Spinner size={18} color="#fff"/> Enregistrement…</span> : "✓ Valider l'encaissement"}
+        </button>
+      </div>
+    </div>
+  );
+
+  // ── ÉCRAN SUCCÈS ──────────────────────────────────────────────────────────
+  if (screen==="success"&&successData) return (
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"radial-gradient(ellipse at center,rgba(16,185,129,0.08) 0%,transparent 70%)"}}>
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:22,padding:isMobile?"32px 22px":"48px 42px",textAlign:"center",maxWidth:420,width:"100%"}} className="success-card">
+        <div style={{width:72,height:72,borderRadius:"50%",background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",fontSize:30,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 18px",boxShadow:"0 0 50px rgba(16,185,129,0.4)"}} className="success-icon">✓</div>
+        <div style={{fontSize:isMobile?20:24,fontWeight:900,marginBottom:5}}>Encaissement validé</div>
+        <div style={{fontSize:13,color:"#64748b",letterSpacing:"0.1em",marginBottom:24}}>{successData.order_number}</div>
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:"16px",marginBottom:22,textAlign:"left"}}>
+          {(successData.items||[]).map((item,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:14,padding:"4px 0",color:"#cbd5e1"}}>
+              <span>{item.product_name}{item.quantity>1?` ×${item.quantity}`:""}</span>
+              <span>{fmt(item.subtotal)}</span>
+            </div>
+          ))}
+          <div style={{height:1,background:"rgba(255,255,255,0.06)",margin:"8px 0"}}/>
+          <div style={{display:"flex",justifyContent:"space-between",fontWeight:900,fontSize:isMobile?17:20,color:"#f8fafc"}}><span>Total</span><span>{fmt(successData.total)}</span></div>
+          <div style={{height:1,background:"rgba(255,255,255,0.06)",margin:"8px 0"}}/>
+          {(successData.payments||[]).map((pl,i)=>{ const m=PAYMENT_METHODS.find(m=>m.key===pl.method); return (
+            <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"3px 0",color:"#94a3b8"}}>
+              <span>{m?.icon} {m?.label||pl.method}</span><span>{fmt(pl.amount)}</span>
+            </div>
+          ); })}
+          {parseFloat(successData.change_due)>0.005 && (
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:14,padding:"4px 0",color:"#10b981",fontWeight:700}}><span>Monnaie rendue</span><span>{fmt(successData.change_due)}</span></div>
+          )}
+          {successData.customer_name && <div style={{marginTop:8,fontSize:12,color:"#64748b",textAlign:"center"}}>Client : {successData.customer_name}</div>}
+        </div>
+        <div style={{display:"flex",gap:11}}>
+          <button style={{flex:1,padding:"12px",borderRadius:11,border:"1px solid rgba(255,255,255,0.1)",background:"transparent",color:"#94a3b8",fontSize:14,cursor:"pointer",fontWeight:600}} onClick={()=>window.print()}>🖨 Imprimer</button>
+          <button style={{flex:2,padding:"12px",borderRadius:11,border:"none",background:"linear-gradient(135deg,#f0c987,#e8a44e)",color:"#0a0d14",fontWeight:900,fontSize:14,cursor:"pointer"}} onClick={reset} className="checkout-btn">Nouvelle vente →</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODAL & ACTIONS — composants partagés
+// ═══════════════════════════════════════════════════════════════════════════════
+function Modal({ title, onClose, children }) {
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(6px)",padding:16}}>
+      <div style={{background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:18,padding:"28px 30px",width:"100%",maxWidth:520,maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{fontSize:18,fontWeight:900,marginBottom:20,color:"#f8fafc"}}>{title}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ModalActions({ onCancel, onSave, saving }) {
+  return (
+    <div style={{display:"flex",gap:10,marginTop:22,justifyContent:"flex-end"}}>
+      <button style={{padding:"11px 18px",borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"transparent",color:"#94a3b8",fontSize:14,cursor:"pointer",fontWeight:600}} onClick={onCancel}>Annuler</button>
+      <button style={{padding:"11px 22px",borderRadius:9,border:"none",background:"linear-gradient(135deg,#f0c987,#e8a44e)",color:"#0a0d14",fontSize:14,cursor:"pointer",fontWeight:900,display:"flex",alignItems:"center",gap:8}} onClick={onSave} disabled={saving}>
+        {saving && <Spinner size={16} color="#0a0d14"/>}{saving?"Enregistrement…":"Enregistrer"}
+      </button>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// APP ROOT
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function App() {
+  const [user, setUser]             = useState(null);
+  const [checked, setChecked]       = useState(false);
+  const [navOpen, setNavOpen]       = useState(false);
+  const [activePage, setActivePage] = useState("encaissement");
+  const [now, setNow]               = useState(new Date());
+  const [toastMsg, setToastMsg]     = useState(null);
+  const { isMobile, isTablet, w }   = useBreakpoint();
+
+  const toast = (msg, type="error") => setToastMsg({msg,type});
+
+  useEffect(()=>{
+    (async()=>{
+      const token = getToken();
+      if (token) {
+        try { const res = await GET("/auth/me"); setUser(res.data); }
+        catch { clearToken(); }
+      }
+      setChecked(true);
+    })();
+  },[]);
+
+  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(t); },[]);
+
+  // Sur desktop large, nav toujours visible
+  const navAlwaysOpen = w >= 1280;
+  const isNavOpen     = navAlwaysOpen || navOpen;
+
+  const handleLogin  = (u) => setUser(u);
+  const handleLogout = () => { clearToken(); setUser(null); setActivePage("encaissement"); };
+  const navigate     = (id) => { setActivePage(id); if (!navAlwaysOpen) setNavOpen(false); };
+
+  if (!checked) return (
+    <div style={{minHeight:"100vh",background:"#0a0d14",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <Spinner size={48}/>
+    </div>
+  );
+
+  if (!user) return (<><style>{css}</style><LoginScreen onLogin={handleLogin}/></>);
+
+  const currentNav = NAV_ITEMS.find(n=>n.id===activePage);
+  const headerH    = isMobile ? 58 : 72;
+  const navW       = isMobile ? 260 : isTablet ? 240 : 260;
+
+  return (
+    <div style={{minHeight:"100vh",background:"#0a0d14",color:"#e2e8f0",fontFamily:"'DM Sans','Segoe UI',sans-serif",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <style>{css}</style>
+      {toastMsg && <Toast msg={toastMsg.msg} type={toastMsg.type} onClose={()=>setToastMsg(null)}/>}
+
+      {/* Overlay nav (mobile/tablet) */}
+      {!navAlwaysOpen && navOpen && <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:40,backdropFilter:"blur(4px)"}} onClick={()=>setNavOpen(false)}/>}
+
+      {/* ── NAV ── */}
+      <nav style={{position:"fixed",top:0,left:0,bottom:0,width:navW,background:"#0d1117",borderRight:"1px solid rgba(255,255,255,0.07)",zIndex:50,display:"flex",flexDirection:"column",padding:"0 10px 20px",transition:navAlwaysOpen?"none":"transform 0.3s cubic-bezier(0.4,0,0.2,1)",transform:isNavOpen?"translateX(0)":`translateX(-100%)`,boxShadow:navAlwaysOpen?"none":"8px 0 32px rgba(0,0,0,0.5)"}}>
+        <div style={{padding:"24px 14px 16px"}}>
+          <div style={{fontSize:20,fontWeight:900,letterSpacing:"0.2em",background:"linear-gradient(90deg,#f0c987,#e8a44e)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>LIME SAS</div>
+          <div style={{fontSize:12,color:"#475569",letterSpacing:"0.06em",marginTop:3}}>L'Instant Beauté</div>
+        </div>
+        <div style={{height:1,background:"rgba(255,255,255,0.06)",margin:"0 4px 12px"}}/>
+        {NAV_ITEMS.map(item=>(
+          <button key={item.id}
+            style={{display:"flex",alignItems:"center",gap:13,padding:"12px 14px",borderRadius:10,border:"none",background:activePage===item.id?"rgba(240,201,135,0.1)":"transparent",color:activePage===item.id?"#f0c987":"#64748b",fontSize:15,fontWeight:activePage===item.id?700:500,cursor:"pointer",textAlign:"left",position:"relative",transition:"all 0.15s",width:"100%",marginBottom:3}}
+            onClick={()=>navigate(item.id)} className="nav-item">
+            <span style={{fontSize:17,width:22,textAlign:"center",flexShrink:0}}>{item.icon}</span>
+            <span>{item.label}</span>
+            {activePage===item.id && <span style={{position:"absolute",right:14,width:6,height:6,borderRadius:"50%",background:"#f0c987"}}/>}
+          </button>
+        ))}
+        <div style={{flex:1}}/>
+        <div style={{borderTop:"1px solid rgba(255,255,255,0.06)",paddingTop:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:11,padding:"4px 12px"}}>
+            <div style={{width:36,height:36,borderRadius:"50%",background:"rgba(240,201,135,0.2)",color:"#f0c987",fontSize:14,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              {(user.name||"?")[0]}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{user.name}</div>
+              <div style={{fontSize:11,color:"#64748b"}}>{user.role}</div>
+            </div>
+            <button style={{background:"none",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:"#64748b",cursor:"pointer",fontSize:12,padding:"5px 9px",flexShrink:0}} onClick={handleLogout}>↩</button>
+          </div>
+        </div>
+      </nav>
+
+      {/* ── HEADER ── */}
+      <header style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:isMobile?"10px 14px":"14px 24px",paddingLeft:navAlwaysOpen?`${navW+24}px`:isMobile?"14px":"24px",borderBottom:"1px solid rgba(255,255,255,0.06)",background:"rgba(255,255,255,0.02)",backdropFilter:"blur(10px)",flexShrink:0,zIndex:10,height:headerH,boxSizing:"border-box",transition:"padding-left 0.3s"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          {!navAlwaysOpen && (
+            <button style={{width:40,height:40,borderRadius:10,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:5,flexShrink:0}} onClick={()=>setNavOpen(v=>!v)} className="menu-btn">
+              <div style={{width:16,height:2,background:"#e2e8f0",borderRadius:2,transition:"all 0.25s",transform:navOpen?"rotate(45deg) translate(5px,5px)":"none"}}/>
+              <div style={{width:16,height:2,background:"#e2e8f0",borderRadius:2,opacity:navOpen?0:1}}/>
+              <div style={{width:16,height:2,background:"#e2e8f0",borderRadius:2,transition:"all 0.25s",transform:navOpen?"rotate(-45deg) translate(5px,-5px)":"none"}}/>
+            </button>
+          )}
+          <div>
+            <div style={{fontSize:isMobile?16:19,fontWeight:900,letterSpacing:"0.18em",background:"linear-gradient(90deg,#f0c987,#e8a44e)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>LIME SAS</div>
+            <div style={{fontSize:11,color:"#64748b",letterSpacing:"0.06em",marginTop:1}}>{currentNav?.icon} {currentNav?.label}</div>
+          </div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:isMobile?18:22,fontWeight:700,letterSpacing:"0.05em",color:"#f8fafc"}}>{now.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</div>
+          {!isMobile && <div style={{fontSize:11,color:"#64748b",textTransform:"capitalize"}}>{now.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})}</div>}
+        </div>
+      </header>
+
+      {/* ── CONTENT ── */}
+      <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",marginLeft:navAlwaysOpen?navW:0,transition:"margin-left 0.3s"}}>
+        {activePage==="encaissement"    && <PageEncaissement    toast={toast}/>}
+        {activePage==="prestations"     && <PagePrestations     toast={toast}/>}
+        {activePage==="categories"      && <PageCategories      toast={toast}/>}
+        {activePage==="clients"         && <PageClients         toast={toast}/>}
+        {activePage==="employes"        && <PageEmployes        toast={toast} currentUser={user}/>}
+        {activePage==="depenses"        && <PageDepenses        toast={toast}/>}
+        {activePage==="recettes"          && <PageRecettes          toast={toast}/>}
+        {activePage==="rapport-journalier" && <PageRapportJournalier toast={toast}/>}
+        {activePage==="rapport-mensuel"    && <PageRapport type="mensuel" toast={toast}/>}
+        {activePage==="rapport-annuel"     && <PageRapport type="annuel"  toast={toast}/>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STYLES COMMUNS
+// ═══════════════════════════════════════════════════════════════════════════════
+// Styles boutons navigation période
+const navBtn   = {width:36,height:36,borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#94a3b8",fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"};
+const resetBtn = {padding:"7px 14px",borderRadius:9,border:"1px solid rgba(240,201,135,0.25)",background:"rgba(240,201,135,0.08)",color:"#f0c987",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"};
+
+const c = {
+  page:        { flex:1, padding:"clamp(14px,2vw,28px)", overflowY:"auto", maxHeight:"calc(100vh - 72px)" },
+  pageHeader:  { display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"clamp(16px,2vw,24px)" },
+  pageTitle:   { fontSize:"clamp(18px,2.5vw,26px)", fontWeight:900, color:"#f8fafc", letterSpacing:"-0.01em" },
+  pageSub:     { fontSize:"clamp(12px,1.2vw,15px)", color:"#64748b", marginTop:4 },
+  addBtn:      { padding:"clamp(9px,1vw,12px) clamp(16px,1.5vw,22px)", borderRadius:10, border:"none", background:"linear-gradient(135deg,#f0c987,#e8a44e)", color:"#0a0d14", fontWeight:900, fontSize:"clamp(13px,1.2vw,15px)", cursor:"pointer", flexShrink:0 },
+  search:      { padding:"clamp(9px,1vw,12px) clamp(12px,1.2vw,16px)", borderRadius:9, border:"1px solid rgba(255,255,255,0.1)", background:"rgba(255,255,255,0.05)", color:"#f8fafc", fontSize:"clamp(13px,1.2vw,15px)", outline:"none" },
+  tab:         { padding:"clamp(6px,0.7vw,9px) clamp(11px,1vw,16px)", borderRadius:8, border:"1px solid rgba(255,255,255,0.08)", background:"transparent", color:"#64748b", fontSize:"clamp(12px,1.1vw,14px)", cursor:"pointer", fontWeight:500 },
+  tabActive:   { background:"rgba(240,201,135,0.12)", borderColor:"rgba(240,201,135,0.3)", color:"#f0c987", fontWeight:700 },
+  table:       { background:"rgba(255,255,255,0.02)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:13, overflow:"hidden" },
+  tableHead:   { display:"flex", padding:"clamp(9px,1vw,12px) clamp(14px,1.5vw,20px)", background:"rgba(255,255,255,0.03)", fontSize:"clamp(10px,0.9vw,12px)", fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", color:"#475569", borderBottom:"1px solid rgba(255,255,255,0.06)" },
+  tableRow:    { display:"flex", alignItems:"center", padding:"clamp(11px,1.2vw,15px) clamp(14px,1.5vw,20px)", borderBottom:"1px solid rgba(255,255,255,0.04)", fontSize:"clamp(13px,1.2vw,15px)", color:"#cbd5e1" },
+  chip:        { display:"inline-flex", alignItems:"center", padding:"4px 11px", borderRadius:20, fontSize:"clamp(11px,1vw,13px)", fontWeight:600 },
+  avatar:      { display:"inline-flex", alignItems:"center", justifyContent:"center", width:30, height:30, borderRadius:"50%", background:"rgba(240,201,135,0.15)", color:"#f0c987", fontWeight:900, fontSize:13, marginRight:10, flexShrink:0 },
+  loyaltyBadge:{ display:"inline-flex", alignItems:"center", gap:3, padding:"3px 10px", borderRadius:20, background:"rgba(251,191,36,0.12)", color:"#fbbf24", fontSize:"clamp(11px,1vw,13px)", fontWeight:700 },
+  iconBtn:     { background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:"clamp(15px,1.3vw,18px)", padding:"3px 7px", borderRadius:6, lineHeight:1 },
+  formGrid:    { display:"grid", gridTemplateColumns:"1fr 1fr", gap:"clamp(10px,1.2vw,16px)" },
+  formGroup:   { display:"flex", flexDirection:"column", gap:6 },
+  label:       { fontSize:"clamp(10px,0.9vw,12px)", color:"#94a3b8", fontWeight:700, letterSpacing:"0.05em", textTransform:"uppercase" },
+  input:       { padding:"clamp(10px,1vw,13px) clamp(12px,1.2vw,14px)", borderRadius:9, border:"1px solid rgba(255,255,255,0.1)", background:"rgba(255,255,255,0.05)", color:"#f8fafc", fontSize:"clamp(13px,1.2vw,15px)", outline:"none", boxSizing:"border-box" },
+  saveBtn:     { padding:"clamp(10px,1vw,13px) clamp(18px,1.8vw,24px)", borderRadius:9, border:"none", background:"linear-gradient(135deg,#f0c987,#e8a44e)", color:"#0a0d14", fontSize:"clamp(13px,1.2vw,15px)", cursor:"pointer", fontWeight:900 },
+  cancelBtn:   { padding:"clamp(10px,1vw,13px) clamp(14px,1.5vw,18px)", borderRadius:9, border:"1px solid rgba(255,255,255,0.1)", background:"transparent", color:"#94a3b8", fontSize:"clamp(13px,1.2vw,15px)", cursor:"pointer", fontWeight:600 },
+  cardTitle:   { fontSize:"clamp(10px,0.9vw,12px)", fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase", color:"#64748b", marginBottom:"clamp(10px,1.2vw,15px)" },
+};
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { width:100%; height:100%; overflow:hidden; background:#0a0d14; }
+  body { background: #0a0d14; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.09); border-radius: 5px; }
+
+  /* ── GLOBAL ── */
+  .nav-item:hover  { background: rgba(255,255,255,0.05) !important; color: #e2e8f0 !important; }
+  .menu-btn:hover  { background: rgba(255,255,255,0.09) !important; }
+  .card-hover:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,0,0,0.3); }
+  .success-card { animation: fadeUp 0.5s ease; }
+  .success-icon { animation: pop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.1s both; }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes pop    { from { transform:scale(0.5); opacity:0; } to { transform:scale(1); opacity:1; } }
+  .spinner { animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .bar-item:hover .bar-tooltip { display: block !important; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  input[type=number] { -moz-appearance: textfield; }
+  input:focus, select:focus { border-color: rgba(240,201,135,0.45) !important; }
+  select option { background: #0d1117; color: #e2e8f0; }
+
+  /* ════════════════════════════════════════════════════
+     ENCAISSEMENT — CSS GRID RESPONSIVE
+     Colonnes : [cats] [grille] [recap]
+     Mobile   : cats=barre top, grille+recap empilés
+  ════════════════════════════════════════════════════ */
+  .caisse-root {
+    display: grid;
+    grid-template-columns: 170px 1fr 300px;
+    grid-template-rows: 1fr;
+    grid-template-areas: "cats main recap";
+    height: calc(100vh - 72px);
+    width: 100%;
+    overflow: hidden;
+  }
+
+  /* Catégories */
+  .caisse-cats {
+    grid-area: cats;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 12px 8px;
+    border-right: 1px solid rgba(255,255,255,0.06);
+    overflow-y: auto;
+    background: rgba(255,255,255,0.01);
+  }
+  .caisse-cats-title {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: #475569;
+    text-transform: uppercase;
+    padding: 4px 10px 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .caisse-cat-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 11px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s;
+    width: 100%;
+    position: relative;
+    font-family: inherit;
+  }
+  .caisse-cat-btn:hover  { background: rgba(255,255,255,0.04); color: #e2e8f0; }
+  .caisse-cat-btn.active { font-weight: 700; }
+  .caisse-cat-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
+  .caisse-cat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .caisse-cat-dot { position:absolute; right:10px; width:5px; height:5px; border-radius:50%; }
+
+  /* Grille principale */
+  .caisse-main {
+    grid-area: main;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 14px 16px;
+  }
+  .caisse-main-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+  .caisse-main-title { font-size: 15px; font-weight: 700; color: #f8fafc; }
+  .caisse-main-count { font-size: 12px; color: #475569; }
+
+  .caisse-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+    overflow-y: auto;
+    padding-right: 4px;
+    align-content: start;
+    align-items: stretch;
+  }
+  .caisse-service-btn {
+    position: relative;
+    padding: 14px 13px;
+    border-radius: 11px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.04);
+    color: #cbd5e1;
+    cursor: pointer;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    transition: all 0.15s;
+    font-family: inherit;
+    min-height: 90px;
+    height: 100%;
+  }
+  .caisse-service-btn:hover { border-color: rgba(240,201,135,0.3) !important; background: rgba(240,201,135,0.07) !important; transform: translateY(-1px); }
+  .caisse-badge {
+    position: absolute;
+    top: 6px; right: 6px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .caisse-sv-name  { font-size: 13px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .caisse-sv-dur   { font-size: 12px; color: #64748b; }
+  .caisse-sv-price { font-size: 14px; font-weight: 800; margin-top: auto; padding-top: 3px; flex-shrink: 0; }
+
+  /* Récap panier */
+  .caisse-recap {
+    grid-area: recap;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.015);
+    overflow: hidden;
+  }
+  .caisse-recap-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+  }
+  .caisse-recap-title { font-size: 13px; font-weight: 700; letter-spacing: 0.05em; }
+  .caisse-vider-btn  { font-size: 12px; color: #f87171; background: none; border: none; cursor: pointer; padding: 3px 8px; border-radius: 6px; font-family: inherit; }
+  .caisse-recap-items { flex: 1; overflow-y: auto; padding: 6px 14px; }
+  .caisse-empty-cart  { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; min-height:120px; color:#334155; font-size:13px; text-align:center; gap:4px; }
+  .caisse-cart-item   { display:flex; align-items:center; gap:6px; padding:9px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+  .caisse-cart-info   { flex:1; min-width:0; }
+  .caisse-cart-name   { font-size:12px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .caisse-cart-sub    { font-size:11px; color:#64748b; margin-top:2px; }
+  .caisse-cart-controls { display:flex; align-items:center; gap:3px; }
+  .caisse-qty-btn { width:22px; height:22px; border-radius:6px; border:1px solid rgba(255,255,255,0.1); background:transparent; color:#cbd5e1; font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center; font-family:inherit; }
+  .caisse-qty-btn:hover { background: rgba(255,255,255,0.08); }
+  .caisse-qty-val { width:18px; text-align:center; font-size:12px; font-weight:700; }
+  .caisse-cart-total  { font-size:12px; font-weight:800; color:#f0c987; min-width:50px; text-align:right; }
+  .caisse-del-btn  { background:none; border:none; color:#475569; cursor:pointer; font-size:10px; padding:2px; }
+  .caisse-recap-footer { padding:12px 14px 16px; border-top:1px solid rgba(255,255,255,0.06); display:flex; flex-direction:column; gap:8px; flex-shrink:0; }
+  .caisse-total-row   { display:flex; justify-content:space-between; font-size:13px; }
+  .caisse-divider     { height:1px; background:rgba(255,255,255,0.06); }
+  .caisse-checkout-btn { padding:13px; border-radius:11px; border:none; background:linear-gradient(135deg,#f0c987,#e8a44e); color:#0a0d14; font-weight:900; font-size:15px; cursor:pointer; transition:all 0.2s; font-family:inherit; }
+  .caisse-checkout-btn:hover:not(.disabled) { filter:brightness(1.08); transform:translateY(-1px); box-shadow:0 6px 24px rgba(240,201,135,0.35); }
+  .caisse-checkout-btn.disabled { background:rgba(255,255,255,0.06); color:#334155; cursor:not-allowed; }
+
+  /* Bouton Encaisser (écran paiement) */
+  .encaisser-btn:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+  .checkout-btn:hover:not(:disabled)  { filter: brightness(1.08); transform: translateY(-1px); }
+
+  /* ════ TABLETTE 640–1023px ════ */
+  @media (max-width: 1023px) {
+    .caisse-root {
+      grid-template-columns: 140px 1fr 260px;
+      height: calc(100vh - 72px);
+    }
+    .caisse-cat-btn  { font-size: 12px; padding: 9px 9px; }
+    .caisse-grid     { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+    .caisse-sv-name  { font-size: 11px; -webkit-line-clamp: 2; }
+    .caisse-sv-price { font-size: 12px; }
+  }
+
+  /* ════ MOBILE < 640px ════ */
+  @media (max-width: 639px) {
+    .caisse-root {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 1fr auto;
+      grid-template-areas:
+        "cats"
+        "main"
+        "recap";
+      height: calc(100vh - 58px);
+    }
+
+    /* Catégories → barre horizontale scrollable */
+    .caisse-cats {
+      flex-direction: row;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 8px 12px;
+      gap: 6px;
+      border-right: none;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .caisse-cats-title { display: none; }
+    .caisse-cat-btn {
+      flex-direction: row;
+      flex-shrink: 0;
+      width: auto;
+      padding: 7px 13px;
+      border-radius: 20px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .caisse-cat-dot { display: none; }
+
+    /* Grille */
+    .caisse-main { padding: 10px 12px; }
+    .caisse-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 7px; }
+
+    /* Récap → tiroir compact en bas */
+    .caisse-recap {
+      border-left: none;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      max-height: 42vh;
+    }
+    .caisse-recap-items { max-height: 120px; }
+  }
+
+  /* ════ GRAND ÉCRAN ≥ 1440px ════ */
+  @media (min-width: 1440px) {
+    .caisse-root { grid-template-columns: 200px 1fr 340px; }
+    .caisse-cat-btn  { font-size: 14px; padding: 11px 13px; }
+    .caisse-grid     { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .caisse-sv-name  { font-size: 13px; -webkit-line-clamp: 2; }
+    .caisse-sv-price { font-size: 15px; }
+    .caisse-service-btn { padding: 14px 13px; min-height: 100px; }
+  }
+
+  /* ════ TRÈS GRAND ÉCRAN ≥ 1920px ════ */
+  @media (min-width: 1920px) {
+    .caisse-root { grid-template-columns: 220px 1fr 380px; }
+    .caisse-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+    .caisse-sv-name  { font-size: 14px; -webkit-line-clamp: 2; }
+    .caisse-sv-price { font-size: 16px; }
+    .caisse-service-btn { padding: 16px 14px; min-height: 100px; }
+    .caisse-cat-btn  { font-size: 15px; padding: 12px 14px; }
+  }
+`;
