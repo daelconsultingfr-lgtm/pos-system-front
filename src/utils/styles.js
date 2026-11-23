@@ -31,7 +31,7 @@ export const c = {
   avatar:      { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: "50%", background: "rgba(240,201,135,0.15)", color: "#f0c987", fontWeight: 900, fontSize: 13, marginRight: 10, flexShrink: 0 },
   loyaltyBadge:{ display: "inline-flex", alignItems: "center", gap: 3, padding: "3px 10px", borderRadius: 20, background: "rgba(251,191,36,0.12)", color: "#fbbf24", fontSize: "clamp(11px,1vw,13px)", fontWeight: 700 },
   iconBtn:     { background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: "clamp(15px,1.3vw,18px)", padding: "3px 7px", borderRadius: 6, lineHeight: 1 },
-  formGrid:    { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "clamp(10px,1.2vw,16px)" },
+  formGrid:    { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(min(100%,220px),1fr))", gap: "clamp(10px,1.2vw,16px)" },
   formGroup:   { display: "flex", flexDirection: "column", gap: 6 },
   label:       { fontSize: "clamp(10px,0.9vw,12px)", color: "#94a3b8", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" },
   input:       { padding: "clamp(10px,1vw,13px) clamp(12px,1.2vw,14px)", borderRadius: 9, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)", color: "#f8fafc", fontSize: "clamp(13px,1.2vw,15px)", outline: "none", boxSizing: "border-box" },
