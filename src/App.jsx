@@ -1,22 +1,26 @@
-import { useState, useEffect } from "react";
-import { GET, POST, getToken, setToken, clearToken } from "./utils/api";
+import { useState, useEffect, useCallback } from "react";
+import { GET, POST, getToken, setToken, clearToken, getShopId, setShopId, clearShopId, setUnauthorizedHandler } from "./utils/api";
 import { NAV_ITEMS } from "./utils/format";
 import { c, css } from "./utils/styles";
 import useBreakpoint from "./hooks/useBreakpoint";
 import Spinner from "./components/Spinner";
 import { Toast } from "./components/UI";
+import { inject } from '@vercel/analytics';
+inject(); // ← juste après l'import, une seule fois
 
 import PageEncaissement      from "./pages/PageEncaissement";
 import PagePrestations       from "./pages/PagePrestations";
+import PageProduits          from "./pages/PageProduits";
 import PageCategories        from "./pages/PageCategories";
 import PageClients           from "./pages/PageClients";
 import PageEmployes          from "./pages/PageEmployes";
+import PageCaisse            from "./pages/PageCaisse";
 import PageDepenses          from "./pages/PageDepenses";
 import PageRecettes          from "./pages/PageRecettes";
 import PageRapportJournalier from "./pages/PageRapportJournalier";
 import PageRapport           from "./pages/PageRapport";
 
-// ─── Thème par défaut & persistance ──────────────────────────────────────────
+
 const DEFAULT_THEME = {
   bgApp:     "#0a0d14",   // fond principal
   bgNav:     "#0d1117",   // fond nav
@@ -87,7 +91,7 @@ function ThemePanel({ theme, onChange, onClose }) {
 
           {/* Présets */}
           <div>
-            <div style={labelStyle(theme)}>Thèmes prédéfinis</div>
+            <div style={labelStyle()}>Thèmes prédéfinis</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {PRESETS.map(p=>(
                 <button key={p.label}
@@ -115,31 +119,31 @@ function ThemePanel({ theme, onChange, onClose }) {
 
           {/* Couleur de fond principal */}
           <div>
-            <div style={labelStyle(theme)}>Fond principal</div>
+            <div style={labelStyle()}>Fond principal</div>
             <ColorRow value={local.bgApp} onChange={v=>set("bgApp",v)} theme={theme}/>
           </div>
 
           {/* Couleur fond nav */}
           <div>
-            <div style={labelStyle(theme)}>Fond navigation</div>
+            <div style={labelStyle()}>Fond navigation</div>
             <ColorRow value={local.bgNav} onChange={v=>set("bgNav",v)} theme={theme}/>
           </div>
 
           {/* Couleur accent */}
           <div>
-            <div style={labelStyle(theme)}>Couleur accent</div>
+            <div style={labelStyle()}>Couleur accent</div>
             <ColorRow value={local.accent} onChange={v=>set("accent",v)} theme={theme}/>
           </div>
 
           {/* Couleur texte */}
           <div>
-            <div style={labelStyle(theme)}>Couleur du texte</div>
+            <div style={labelStyle()}>Couleur du texte</div>
             <ColorRow value={local.textColor} onChange={v=>set("textColor",v)} theme={theme}/>
           </div>
 
           {/* Taille police */}
           <div>
-            <div style={{...labelStyle(theme),display:"flex",justifyContent:"space-between"}}>
+            <div style={{...labelStyle(),display:"flex",justifyContent:"space-between"}}>
               <span>Taille de police</span>
               <span style={{color:theme.accent,fontWeight:700}}>{local.fontSize}px</span>
             </div>
@@ -196,20 +200,95 @@ function ColorRow({ value, onChange, theme }) {
   );
 }
 
-function labelStyle(theme) {
+function labelStyle() {
   return { fontSize:11,fontWeight:700,letterSpacing:"0.08em",
     textTransform:"uppercase",color:"#64748b",marginBottom:8 };
 }
 
+// ─── Sélecteur de boutique ────────────────────────────────────────────────────
+// Fonctionne comme un profil : on bascule d'une boutique à l'autre et toute
+// l'application se recharge sur son périmètre. Le mode consolidé n'est proposé
+// qu'aux rôles qui voient l'ensemble des boutiques.
+function ShopSwitcher({ shops, activeShopId, onSelect, canConsolidate, theme }) {
+  const [open, setOpen] = useState(false);
+  if (!shops.length) return null;
+
+  const active = shops.find(s => s.id === activeShopId);
+  const label  = active ? active.name : "Toutes les boutiques";
+  const dot    = active?.color || "#94a3b8";
+
+  // Une seule boutique et pas de consolidation : rien à choisir, on affiche
+  // simplement où l'on se trouve.
+  const selectable = shops.length > 1 || canConsolidate;
+
+  return (
+    <div style={{position:"relative",padding:"10px 10px 0"}}>
+      <button
+        onClick={()=>selectable && setOpen(v=>!v)}
+        title={selectable ? "Changer de boutique" : label}
+        style={{
+          display:"flex",alignItems:"center",gap:9,width:"100%",
+          padding:"9px 11px",borderRadius:10,
+          border:`1px solid ${dot}44`,background:dot+"14",
+          cursor:selectable?"pointer":"default",fontFamily:"inherit",textAlign:"left",
+        }}>
+        <span style={{width:9,height:9,borderRadius:"50%",background:dot,flexShrink:0}}/>
+        <span style={{flex:1,minWidth:0}}>
+          <span style={{display:"block",fontSize:13,fontWeight:800,color:theme.textColor,
+            whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</span>
+          <span style={{display:"block",fontSize:10.5,color:"#64748b",letterSpacing:"0.06em"}}>
+            {active ? active.code : `${shops.length} boutiques`}
+          </span>
+        </span>
+        {selectable && <span style={{fontSize:11,color:"#64748b",flexShrink:0}}>{open?"▲":"▼"}</span>}
+      </button>
+
+      {open && selectable && (
+        <div style={{
+          position:"absolute",left:10,right:10,top:"100%",zIndex:60,marginTop:4,
+          background:theme.bgNav,border:"1px solid rgba(255,255,255,0.12)",
+          borderRadius:10,boxShadow:"0 12px 32px rgba(0,0,0,0.55)",overflow:"hidden",
+        }}>
+          {canConsolidate && (
+            <button onClick={()=>{ onSelect(""); setOpen(false); }}
+              style={{display:"flex",alignItems:"center",gap:9,width:"100%",padding:"10px 12px",
+                border:"none",borderBottom:"1px solid rgba(255,255,255,0.06)",
+                background:!activeShopId?"rgba(255,255,255,0.06)":"transparent",
+                color:theme.textColor,cursor:"pointer",fontSize:13,fontFamily:"inherit",textAlign:"left"}}>
+              <span style={{width:9,height:9,borderRadius:"50%",background:"#94a3b8",flexShrink:0}}/>
+              <span style={{flex:1}}>Toutes les boutiques</span>
+              {!activeShopId && <span style={{color:theme.accent}}>✓</span>}
+            </button>
+          )}
+          {shops.map(sh => (
+            <button key={sh.id} onClick={()=>{ onSelect(sh.id); setOpen(false); }}
+              style={{display:"flex",alignItems:"center",gap:9,width:"100%",padding:"10px 12px",
+                border:"none",background:activeShopId===sh.id?"rgba(255,255,255,0.06)":"transparent",
+                color:theme.textColor,cursor:"pointer",fontSize:13,fontFamily:"inherit",textAlign:"left"}}>
+              <span style={{width:9,height:9,borderRadius:"50%",background:sh.color||"#94a3b8",flexShrink:0}}/>
+              <span style={{flex:1,minWidth:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                {sh.name}
+              </span>
+              <span style={{fontSize:10.5,color:"#64748b"}}>{sh.code}</span>
+              {activeShopId===sh.id && <span style={{color:theme.accent}}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Écran de connexion ───────────────────────────────────────────────────────
 function LoginScreen({ onLogin, theme }) {
-  const [email,    setEmail]    = useState("admin@salon.com");
-  const [password, setPassword] = useState("admin123");
+  const [email,    setEmail]    = useState(""); // Valeur vide par défaut
+  const [password, setPassword] = useState(""); // Valeur vide par défaut
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState("");
   const { isMobile } = useBreakpoint();
 
   const handleLogin = async () => {
+    if (!email || !password) return setError("Veuillez remplir tous les champs");
     setLoading(true); setError("");
     try {
       const res = await POST("/auth/login", { email, password });
@@ -219,6 +298,12 @@ function LoginScreen({ onLogin, theme }) {
     finally { setLoading(false); }
   };
 
+  // Configuration des champs pour la boucle .map
+  const fields = [
+    { label: "Email", value: email, setter: setEmail, type: "email", placeholder: "votre@email.com" },
+    { label: "Mot de passe", value: password, setter: setPassword, type: "password", placeholder: "••••••••" }
+  ];
+
   return (
     <div style={{ minHeight:"100vh", background:theme.bgApp, display:"flex",
       alignItems:"center", justifyContent:"center", padding:16,
@@ -226,29 +311,51 @@ function LoginScreen({ onLogin, theme }) {
       <div style={{ background:"rgba(255,255,255,0.04)",
         border:"1px solid rgba(255,255,255,0.09)",
         borderRadius:22, padding: isMobile ? "32px 22px" : "52px 48px",
-        width:"100%", maxWidth:440 }}>
+        width:"100%", maxWidth:480 }}> {/* Légèrement plus large pour l'alignement */}
+        
         <div style={{ fontSize:isMobile?26:30, fontWeight:900, letterSpacing:"0.18em",
           background:`linear-gradient(90deg,${theme.accent},${theme.accent}bb)`,
           WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", marginBottom:6 }}>
           L'Instant Beauté
         </div>
         <div style={{ fontSize:15, color:"#64748b", marginBottom:36 }}>
-          L'Instant Beauté · Connexion
+          Espace sécurisé · Connexion
         </div>
+
         {error && (
           <div style={{ background:"rgba(248,113,113,0.15)",
             border:"1px solid rgba(248,113,113,0.3)",
             borderRadius:10, padding:"12px 16px", fontSize:14,
             color:"#f87171", marginBottom:20 }}>{error}</div>
         )}
-        {[["Email",email,setEmail,"email"],["Mot de passe",password,setPassword,"password"]].map(([lbl,val,set,type]) => (
-          <div key={lbl} style={{ marginBottom:16 }}>
-            <label style={c.label}>{lbl}</label>
-            <input style={c.input} type={type} value={val}
-              onChange={e=>set(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
+
+        {fields.map((f) => (
+          <div key={f.label} style={{ 
+            display: "flex", 
+            flexDirection: isMobile ? "column" : "row", 
+            alignItems: isMobile ? "flex-start" : "center", 
+            gap: isMobile ? 8 : 20, 
+            marginBottom: 20 
+          }}>
+            <label style={{ 
+              ...c.label, 
+              marginBottom: 0, 
+              width: isMobile ? "auto" : 120, // Largeur fixe pour aligner les inputs
+              flexShrink: 0 
+            }}>
+              {f.label}
+            </label>
+            <input 
+              style={{ ...c.input, flex: 1, width: "100%" }} 
+              type={f.type} 
+              value={f.value}
+              placeholder={f.placeholder} // Ajout du placeholder
+              onChange={e=>f.setter(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&handleLogin()} 
+            />
           </div>
         ))}
+
         <button style={{ ...c.saveBtn, width:"100%", padding:"15px", fontSize:16, marginTop:10,
           display:"flex", alignItems:"center", justifyContent:"center", gap:10,
           background:`linear-gradient(135deg,${theme.accent},${theme.accent}bb)` }}
@@ -271,20 +378,67 @@ export default function App() {
   const [toastMsg,   setToastMsg]   = useState(null);
   const [theme,      setTheme]      = useState(loadTheme);
   const [showTheme,  setShowTheme]  = useState(false);
+  const [shops,      setShops]      = useState([]);
+  const [activeShop, setActiveShop] = useState(getShopId);
   const { isMobile, isTablet, w }   = useBreakpoint();
 
-  const toast = (msg, type="error") => setToastMsg({ msg, type });
+  // Référence stable : recréé à chaque rendu, `toast` ne pouvait pas figurer
+  // dans les tableaux de dépendances des pages sans provoquer une boucle de
+  // rechargement.
+  const toast = useCallback((msg, type="error") => setToastMsg({ msg, type }), []);
+
+  // Une session expirée doit ramener à la connexion, pas laisser un écran
+  // inutilisable qui empile les messages d'erreur.
+  useEffect(()=>{
+    setUnauthorizedHandler(()=>{
+      clearToken(); clearShopId();
+      setUser(null); setShops([]); setActiveShop("");
+    });
+  },[]);
 
   useEffect(()=>{
     (async()=>{
       const token = getToken();
       if (token) {
-        try { const res = await GET("/auth/me"); setUser(res.data); }
-        catch { clearToken(); }
+        try {
+          const res = await GET("/auth/me");
+          setUser(res.data);
+          if (res.data.role === "accountable") setActivePage("recettes");
+        }
+        catch { clearToken(); clearShopId(); }
       }
       setChecked(true);
     })();
   },[]);
+
+  // Boutiques accessibles. Le choix mémorisé n'est retenu que s'il reste
+  // valide : un employé retiré d'une boutique ne doit pas y rester bloqué.
+  useEffect(()=>{
+    // La déconnexion vide déjà la liste : inutile de la remettre à zéro ici,
+    // ce qui déclencherait un rendu en cascade.
+    if (!user) return;
+    (async()=>{
+      try {
+        const res   = await GET("/shops");
+        const list  = res.data || [];
+        setShops(list);
+        const stored = getShopId();
+        const valid  = list.some(s => s.id === stored);
+        if (valid) return;
+        // Le comptable démarre en vue consolidée, les autres sur leur boutique.
+        const next = user.role === "accountable" ? "" : (list[0]?.id || "");
+        setShopId(next); setActiveShop(next);
+      } catch(e) { toast(e.message); }
+    })();
+  },[user]);
+
+  const canConsolidate = user?.role === "accountable" || user?.role === "admin";
+
+  const switchShop = (id) => {
+    setShopId(id);
+    setActiveShop(id);
+    if (!navAlwaysOpen) setNavOpen(false);
+  };
 
   useEffect(()=>{
     const t = setInterval(()=>setNow(new Date()), 1000);
@@ -296,10 +450,12 @@ export default function App() {
   const navW          = isMobile ? 260 : isTablet ? 240 : 260;
   const headerH       = isMobile ? 58 : 72;
 
-  const handleLogin  = (u) => setUser(u);
-  const handleLogout = () => { clearToken(); setUser(null); setActivePage("encaissement"); };
+  const defaultPage  = (role) => role === "accountable" ? "recettes" : "encaissement";
+  const handleLogin  = (u) => { setUser(u); setActivePage(defaultPage(u.role)); };
+  const handleLogout = () => { clearToken(); clearShopId(); setUser(null); setShops([]); setActiveShop(""); setActivePage("encaissement"); };
   const navigate     = (id) => { setActivePage(id); if (!navAlwaysOpen) setNavOpen(false); };
   const currentNav   = NAV_ITEMS.find(n=>n.id===activePage);
+  const currentShop  = shops.find(s=>s.id===activeShop) || null;
 
   // Appliquer le thème au CSS global
   const themeCSS = `
@@ -412,9 +568,17 @@ export default function App() {
           </div>
         </div>
 
+        {/* ── Boutique active ── */}
+        <ShopSwitcher
+          shops={shops}
+          activeShopId={activeShop}
+          onSelect={switchShop}
+          canConsolidate={canConsolidate}
+          theme={theme}/>
+
         {/* ── Menu principal ── */}
         <div style={{flex:1,overflowY:"auto",padding:"10px 0"}}>
-          {NAV_ITEMS.map(item=>(
+          {NAV_ITEMS.filter(item => !item.roles || item.roles.includes(user?.role)).map(item => 
             <button key={item.id} onClick={()=>navigate(item.id)} className="nav-item"
               style={{
                 display:"flex",alignItems:"center",gap:13,
@@ -438,7 +602,7 @@ export default function App() {
                   borderRadius:"50%",background:theme.accent}}/>
               )}
             </button>
-          ))}
+          )}
         </div>
 
         {/* ── Copyright ── */}
@@ -493,8 +657,19 @@ export default function App() {
               WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",display:"inline-block"}}>
               L'Instant Beauté
             </div>
-            <div style={{fontSize:11,color:"#64748b",letterSpacing:"0.06em",marginTop:1}}>
-              {currentNav?.icon} {currentNav?.label}
+            <div style={{fontSize:11,color:"#64748b",letterSpacing:"0.06em",marginTop:1,
+              display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+              <span>{currentNav?.icon} {currentNav?.label}</span>
+              {shops.length > 0 && (
+                <span style={{display:"inline-flex",alignItems:"center",gap:5,
+                  padding:"1px 8px",borderRadius:20,
+                  background:(currentShop?.color||"#94a3b8")+"1e",
+                  color:currentShop?.color||"#94a3b8",fontWeight:700}}>
+                  <span style={{width:6,height:6,borderRadius:"50%",
+                    background:currentShop?.color||"#94a3b8"}}/>
+                  {currentShop ? currentShop.name : "Toutes les boutiques"}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -514,15 +689,18 @@ export default function App() {
       </header>
 
       {/* ══════════════ CONTENU ══════════════ */}
-      <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",
+      <div key={activeShop || "all"}
+        style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",
         marginLeft:navAlwaysOpen?navW:0,transition:"margin-left 0.3s"}}>
         {activePage==="encaissement"       && <PageEncaissement      toast={toast}/>}
         {activePage==="prestations"        && <PagePrestations       toast={toast}/>}
+        {activePage==="produits"           && <PageProduits          toast={toast}/>}
         {activePage==="categories"         && <PageCategories        toast={toast}/>}
         {activePage==="clients"            && <PageClients           toast={toast}/>}
         {activePage==="employes"           && <PageEmployes          toast={toast} currentUser={user}/>}
+        {activePage==="caisse"             && <PageCaisse            toast={toast} user={user}/>}
         {activePage==="depenses"           && <PageDepenses          toast={toast}/>}
-        {activePage==="recettes"           && <PageRecettes          toast={toast}/>}
+        {activePage==="recettes"           && <PageRecettes          toast={toast} user={user}/>}
         {activePage==="rapport-journalier" && <PageRapportJournalier toast={toast}/>}
         {activePage==="rapport-mensuel"    && <PageRapport           type="mensuel" toast={toast}/>}
         {activePage==="rapport-annuel"     && <PageRapport           type="annuel"  toast={toast}/>}
