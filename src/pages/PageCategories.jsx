@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { GET, POST, PUT, DELETE } from "../utils/api";
-import { fmt, fmtShort, fmtDate, MONTHS, PMTS, PMT_COLORS } from "../utils/format";
-import { c, navBtn, resetBtn } from "../utils/styles";
-import useBreakpoint from "../hooks/useBreakpoint";
+import { MONTHS, PMTS, PMT_COLORS } from "../utils/format";
+import { c } from "../utils/styles";
 import Spinner from "../components/Spinner";
 import { EmptyState, Modal, ModalActions } from "../components/UI";
 
@@ -14,15 +13,21 @@ export default function PageCategories({ toast }) {
   const [editItem, setEditItem] = useState(null);
   const [form, setForm]         = useState({ name:"", color:"#f0c987", icon:"✦" });
   const [saving, setSaving]     = useState(false);
+  // Les catégories de produits et de prestations sont deux référentiels
+  // distincts : les mélanger polluerait les deux écrans.
+  const [kind, setKind]         = useState("service");
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [cRes,pRes] = await Promise.all([GET("/categories"),GET("/products?limit=500")]);
+      const [cRes,pRes] = await Promise.all([
+        GET(`/categories?kind=${kind}`),
+        GET(`/products?kind=${kind}&limit=500`),
+      ]);
       setCats(cRes.data); setProducts(pRes.data);
     } catch(e) { toast(e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [kind, toast]);
   useEffect(()=>{load();},[load]);
 
   const countFor = (id) => products.filter(p=>p.category_id===id).length;
@@ -34,7 +39,7 @@ export default function PageCategories({ toast }) {
     setSaving(true);
     try {
       if (editItem) { await PUT(`/categories/${editItem.id}`,form); toast("Mise à jour","success"); }
-      else { await POST("/categories",form); toast("Catégorie ajoutée","success"); }
+      else { await POST("/categories",{...form,kind}); toast("Catégorie ajoutée","success"); }
       setShowForm(false); await load();
     } catch(e) { toast(e.message); }
     finally { setSaving(false); }
@@ -43,8 +48,22 @@ export default function PageCategories({ toast }) {
   return (
     <div style={c.page}>
       <div style={c.pageHeader}>
-        <div><div style={c.pageTitle}>Catégories</div><div style={c.pageSub}>{cats.length} catégories</div></div>
+        <div>
+          <div style={c.pageTitle}>Catégories</div>
+          <div style={c.pageSub}>
+            {cats.length} catégorie{cats.length!==1?"s":""} de {kind==="service"?"prestations":"produits"}
+          </div>
+        </div>
         <button style={c.addBtn} onClick={openAdd}>+ Ajouter</button>
+      </div>
+
+      <div style={{display:"flex",gap:6,marginBottom:20}}>
+        {[["service","Prestations"],["product","Produits"]].map(([k,label])=>(
+          <button key={k} onClick={()=>setKind(k)}
+            style={{...c.tab, ...(kind===k?{...c.tabActive,borderColor:"#f0c98788",color:"#f0c987"}:{})}}>
+            {label}
+          </button>
+        ))}
       </div>
       {loading ? <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={36}/></div> : (
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16}}>
@@ -58,7 +77,9 @@ export default function PageCategories({ toast }) {
                   color:cat.color||"#888",display:"flex",alignItems:"center",justifyContent:"center",
                   fontSize:22,marginBottom:13}}>{cat.icon||"✦"}</div>
                 <div style={{fontSize:16,fontWeight:700,color:"#f8fafc",marginBottom:4}}>{cat.name}</div>
-                <div style={{fontSize:13,color:"#64748b",marginBottom:10}}>{count} prestation{count!==1?"s":""}</div>
+                <div style={{fontSize:13,color:"#64748b",marginBottom:10}}>
+                  {count} {kind==="service" ? `prestation${count!==1?"s":""}` : `produit${count!==1?"s":""}`}
+                </div>
                 <div style={{height:5,borderRadius:4,background:"rgba(255,255,255,0.06)"}}>
                   <div style={{width:`${Math.min(100,count*14)}%`,height:"100%",background:cat.color||"#888",borderRadius:4}}/>
                 </div>

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { GET, POST, PUT, DELETE } from "../utils/api";
-import { fmt, fmtShort, fmtDate, MONTHS, PMTS, PMT_COLORS } from "../utils/format";
+import { fmtShort, MONTHS, PMTS, PMT_COLORS, orderRevenue } from "../utils/format";
 import { c, navBtn, resetBtn } from "../utils/styles";
 import useBreakpoint from "../hooks/useBreakpoint";
 import Spinner from "../components/Spinner";
@@ -41,9 +41,9 @@ export default function PageRapport({ type, toast }) {
       setLoading(true); setData(null); setExpenses([]); setOrders([]);
       try {
         const [rRes, eRes, oRes] = await Promise.all([
-          GET(`/reports/sales?from=${from}&to=${to}&group_by=${isAnnual?"month":"day"}&date_field=order_date`),
+          GET(`/reports/sales?from=${from}&to=${to}&group_by=${isAnnual?"month":"day"}`),
           GET(`/expenses?from=${from}&to=${to}&limit=500`),
-          GET(`/orders?from=${from}&to=${to}&limit=500&date_field=order_date`),
+          GET(`/orders?from=${from}&to=${to}&limit=500`),
         ]);
         setData(rRes.data);
         setExpenses(eRes.data||[]);
@@ -71,56 +71,63 @@ export default function PageRapport({ type, toast }) {
     return acc;
   }, {});
 
-  // ── Export CSV
-  const exportCSV = () => {
+  // ── Export XLSX
+  const exportCSV = async () => {
     setExporting(true);
     try {
-      const rows = [];
-      // En-tête
-      rows.push(`"Rapport ${isAnnual?"annuel":"mensuel"} — ${periodLabel}"`);
-      rows.push("");
+      const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs");
+      const wb = XLSX.utils.book_new();
 
-      // Ventes
-      rows.push("=== VENTES ===");
-      rows.push(isAnnual
-        ? '"Mois";"CA (€)";"Nb commandes";"Remises (€)"'
-        : '"Date";"CA (€)";"Nb commandes";"Remises (€)"');
-      periods.forEach(r => {
+      // ── Feuille 1 : Synthèse ventes
+      const venteHeader = isAnnual
+        ? ["Mois","CA (€)","Nb commandes","Remises (€)"]
+        : ["Date","CA (€)","Nb commandes","Remises (€)"];
+      const venteRows = periods.map(r => {
         const d = new Date(r.period);
         const label = isAnnual
           ? d.toLocaleDateString("fr-FR",{month:"long",year:"numeric"})
           : d.toLocaleDateString("fr-FR");
-        rows.push(`"${label}";"${parseFloat(r.revenue||0).toFixed(2)}";"${r.total_orders||0}";"${parseFloat(r.discounts||0).toFixed(2)}"`);
+        return [label, parseFloat(r.revenue||0), parseInt(r.total_orders||0), parseFloat(r.discounts||0)];
       });
-      rows.push(`"TOTAL";"${totalCA.toFixed(2)}";"${periods.reduce((s,r)=>s+parseInt(r.total_orders||0),0)}";""`);
-      rows.push("");
+      venteRows.push(["TOTAL", parseFloat(totalCA.toFixed(2)), periods.reduce((s,r)=>s+parseInt(r.total_orders||0),0), ""]);
+      const wsSynthese = XLSX.utils.aoa_to_sheet([venteHeader, ...venteRows]);
+      wsSynthese["!cols"] = [{wch:20},{wch:12},{wch:16},{wch:14}];
+      XLSX.utils.book_append_sheet(wb, wsSynthese, "Ventes");
 
-      // Liste des commandes détaillées
-      if (orders.length>0) {
-        rows.push("=== DÉTAIL DES VENTES ===");
-        rows.push('"Date";"N° commande";"Client";"Employé";"Paiement";"Total (€)";"Remise (€)"');
-        orders.forEach(o => {
-          rows.push(`"${o.order_date||o.created_at?.split("T")[0]||""}";"${o.order_number||o.id}";"${o.customer_name||""}";"${o.employee_name||""}";"${o.payment_method||""}";"${parseFloat(o.total||0).toFixed(2)}";"${parseFloat(o.discount_amount||0).toFixed(2)}"`);
-        });
-        rows.push("");
+      // ── Feuille 2 : Détail commandes
+      if (orders.length > 0) {
+        const detailHeader = ["Date","N° commande","Client","Employé","Paiement","Total (€)","Remise (€)"];
+        const detailRows = orders.map(o => [
+          o.order_date || o.created_at?.split("T")[0] || "",
+          o.order_number || o.id,
+          o.customer_name || "",
+          o.employee_name || "",
+          o.payment_method || "",
+          orderRevenue(o),
+          parseFloat(o.discount_amount||0),
+        ]);
+        const wsDetail = XLSX.utils.aoa_to_sheet([detailHeader, ...detailRows]);
+        wsDetail["!cols"] = [{wch:12},{wch:14},{wch:20},{wch:16},{wch:14},{wch:10},{wch:10}];
+        XLSX.utils.book_append_sheet(wb, wsDetail, "Détail ventes");
       }
 
-      // Dépenses
-      rows.push("=== DÉPENSES ===");
-      rows.push('"Date";"Description";"Catégorie";"Montant (€)"');
-      expenses.forEach(e => {
-        rows.push(`"${e.date||""}";"${(e.label||"").replace(/"/g,'""')}";"${e.category||"Autre"}";"${parseFloat(e.amount||0).toFixed(2)}"`);
-      });
-      rows.push(`"TOTAL";"";"";"${totalDepenses.toFixed(2)}"`);
-      rows.push("");
-      rows.push(`"RÉSULTAT NET";"";"";"${resultat.toFixed(2)}"`);
+      // ── Feuille 3 : Dépenses
+      const depHeader = ["Date","Description","Catégorie","Montant (€)"];
+      const depRows = expenses.map(e => [
+        e.date || "",
+        e.label || "",
+        e.category || "Autre",
+        parseFloat(e.amount||0),
+      ]);
+      depRows.push(["TOTAL", "", "", parseFloat(totalDepenses.toFixed(2))]);
+      depRows.push([]);
+      depRows.push(["RÉSULTAT NET", "", "", parseFloat(resultat.toFixed(2))]);
+      const wsDep = XLSX.utils.aoa_to_sheet([depHeader, ...depRows]);
+      wsDep["!cols"] = [{wch:12},{wch:30},{wch:16},{wch:12}];
+      XLSX.utils.book_append_sheet(wb, wsDep, "Dépenses");
 
-      const csv = rows.join("\n");
-      const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8;"});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `rapport_${isAnnual?selYear:`${selYear}-${String(selMonth+1).padStart(2,"0")}`}.csv`;
-      a.click(); URL.revokeObjectURL(url);
+      const filename = `rapport_${isAnnual?selYear:`${selYear}-${String(selMonth+1).padStart(2,"0")}`}.xlsx`;
+      XLSX.writeFile(wb, filename);
     } catch(e) { toast("Erreur export : "+e.message); }
     finally { setExporting(false); }
   };
@@ -136,7 +143,7 @@ export default function PageRapport({ type, toast }) {
           {!loading && (
             <button onClick={exportCSV} disabled={exporting}
               style={{padding:"10px 18px",borderRadius:10,border:"1px solid rgba(255,255,255,0.12)",background:"rgba(255,255,255,0.05)",color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7,fontFamily:"inherit"}}>
-              {exporting ? <Spinner size={14}/> : "↓"} Export CSV
+              {exporting ? <Spinner size={14}/> : "↓"} Export XLSX
             </button>
           )}
           {!loading && <div style={{padding:"12px 22px",borderRadius:11,background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",color:"#f0c987",fontWeight:900,fontSize:22}}>{fmtShort(totalCA)}</div>}
@@ -303,7 +310,3 @@ export default function PageRapport({ type, toast }) {
     </div>
   );
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// PAGE RECETTES — liste des ventes mois par mois basée sur order_date
-// ═══════════════════════════════════════════════════════════════════════════════

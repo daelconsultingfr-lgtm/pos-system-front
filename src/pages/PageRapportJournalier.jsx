@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { GET, POST, PUT, DELETE } from "../utils/api";
-import { fmt, fmtShort, fmtDate, MONTHS, PMTS, PMT_COLORS } from "../utils/format";
+import { fmt, fmtShort, MONTHS, PMTS, PMT_COLORS, orderRevenue, isRevenueOrder, sumRevenue, ORDER_STATUS_LABELS } from "../utils/format";
 import { c, navBtn, resetBtn } from "../utils/styles";
 import useBreakpoint from "../hooks/useBreakpoint";
 import Spinner from "../components/Spinner";
@@ -42,9 +42,9 @@ export default function PageRapportJournalier({ toast }) {
       setLoading(true); setData(null); setExpenses([]); setOrders([]);
       try {
         const [rRes, eRes, oRes] = await Promise.all([
-          GET(`/reports/sales?from=${selDate}&to=${selDate}&group_by=hour&date_field=order_date`),
+          GET(`/reports/sales?from=${selDate}&to=${selDate}&group_by=hour`),
           GET(`/expenses?from=${selDate}&to=${selDate}&limit=200`),
-          GET(`/orders?from=${selDate}&to=${selDate}&limit=200&date_field=order_date`),
+          GET(`/orders?from=${selDate}&to=${selDate}&limit=200`),
         ]);
         setData(rRes.data);
         setExpenses(eRes.data||[]);
@@ -55,21 +55,25 @@ export default function PageRapportJournalier({ toast }) {
   },[selDate]);
 
   const { by_payment=[], by_employee=[] } = data||{};
-  const totalCA       = orders.reduce((s,o)=>s+parseFloat(o.total||0),0);
+  // Le CA se calcule sur les seuls tickets encaissés : les commandes annulées
+  // ou remboursées restent listées mais sortent des totaux, sans quoi le
+  // chiffre affiché ici ne correspondait pas à celui de /reports/sales.
+  const totalCA       = sumRevenue(orders);
   const totalDepenses = expenses.reduce((s,e)=>s+parseFloat(e.amount||0),0);
   const resultat      = totalCA - totalDepenses;
-  const totalRemises  = orders.reduce((s,o)=>s+parseFloat(o.discount_amount||0),0);
+  const totalRemises  = orders.filter(isRevenueOrder).reduce((s,o)=>s+parseFloat(o.discount_amount||0),0);
   const totalByPay    = by_payment.reduce((s,r)=>s+parseFloat(r.total||0),0)||1;
   const maxEmpCA      = Math.max(...by_employee.map(e=>parseFloat(e.revenue||0)),1);
 
   // Regrouper les ventes par heure pour le graphe
   const byHour = Array.from({length:24},(_,h)=>({h,rev:0,cnt:0}));
-  orders.forEach(o=>{
+  orders.filter(isRevenueOrder).forEach(o=>{
     const raw = o.created_at||o.order_date||"";
     const h   = raw.includes("T") ? parseInt(raw.split("T")[1].split(":")[0]) : 0;
-    byHour[h].rev += parseFloat(o.total||0);
+    byHour[h].rev += orderRevenue(o);
     byHour[h].cnt += 1;
   });
+  const countCA     = orders.filter(isRevenueOrder).length;
   const activeHours = byHour.filter(h=>h.rev>0);
   const maxHourRev  = Math.max(...byHour.map(h=>h.rev),1);
 
@@ -77,33 +81,38 @@ export default function PageRapportJournalier({ toast }) {
     const cat=e.category||"Autre"; acc[cat]=(acc[cat]||0)+parseFloat(e.amount||0); return acc;
   },{});
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     setExporting(true);
     try {
-      const rows = [
-        `"Rapport journalier — ${dayLabel()} (${selDate})"`,
-        "",
-        "=== VENTES ===",
-        '"Heure";"N° commande";"Client";"Employé";"Paiement";"Remise (€)";"Total (€)"',
-        ...orders.map(o=>{
-          const raw=o.created_at||""; const h=raw.includes("T")?raw.split("T")[1].slice(0,5):"";
-          return `"${h}";"${o.order_number||o.id}";"${o.customer_name||""}";"${o.employee_name||""}";"${o.payment_method||""}";"${parseFloat(o.discount_amount||0).toFixed(2)}";"${parseFloat(o.total||0).toFixed(2)}"`;
-        }),
-        `"TOTAL";"";"";"";"";"${totalRemises.toFixed(2)}";"${totalCA.toFixed(2)}"`,
-        "",
-        "=== DÉPENSES ===",
-        '"Description";"Catégorie";"Montant (€)"',
-        ...expenses.map(e=>`"${(e.label||"").replace(/"/g,'""')}";"${e.category||"Autre"}";"${parseFloat(e.amount||0).toFixed(2)}"`),
-        `"TOTAL";"";"";"${totalDepenses.toFixed(2)}"`,
-        "",
-        `"RÉSULTAT NET";"";"";"${resultat.toFixed(2)}"`,
-      ];
-      const blob = new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8;"});
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href=url; a.download=`rapport_journalier_${selDate}.csv`;
-      a.click(); URL.revokeObjectURL(url);
-    } catch(e) { toast("Erreur export"); }
+      const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs");
+      const wb = XLSX.utils.book_new();
+
+      // ── Feuille 1 : Ventes du jour
+      const ventesHeader = ["Heure","N° commande","Client","Employé","Paiement","Statut","Remise (€)","Total (€)"];
+      const ventesRows = orders.map(o => {
+        const raw = o.created_at || "";
+        const h = raw.includes("T") ? raw.split("T")[1].slice(0,5) : "";
+        return [h, o.order_number||o.id, o.customer_name||"", o.employee_name||"", o.payment_method||"",
+                ORDER_STATUS_LABELS[o.status]||o.status||"", parseFloat(o.discount_amount||0), orderRevenue(o)];
+      });
+      // La ligne TOTAL ne somme que les tickets encaissés, d'où la colonne Statut.
+      ventesRows.push(["TOTAL","","","","","", parseFloat(totalRemises.toFixed(2)), parseFloat(totalCA.toFixed(2))]);
+      const wsVentes = XLSX.utils.aoa_to_sheet([ventesHeader, ...ventesRows]);
+      wsVentes["!cols"] = [{wch:8},{wch:14},{wch:20},{wch:16},{wch:14},{wch:12},{wch:12},{wch:10}];
+      XLSX.utils.book_append_sheet(wb, wsVentes, "Ventes");
+
+      // ── Feuille 2 : Dépenses du jour
+      const depHeader = ["Description","Catégorie","Montant (€)"];
+      const depRows = expenses.map(e => [e.label||"", e.category||"Autre", parseFloat(e.amount||0)]);
+      depRows.push(["TOTAL","", parseFloat(totalDepenses.toFixed(2))]);
+      depRows.push([]);
+      depRows.push(["RÉSULTAT NET","", parseFloat(resultat.toFixed(2))]);
+      const wsDep = XLSX.utils.aoa_to_sheet([depHeader, ...depRows]);
+      wsDep["!cols"] = [{wch:30},{wch:16},{wch:12}];
+      XLSX.utils.book_append_sheet(wb, wsDep, "Dépenses");
+
+      XLSX.writeFile(wb, `rapport_journalier_${selDate}.xlsx`);
+    } catch(e) { toast(`Erreur export : ${e.message}`); }
     finally { setExporting(false); }
   };
 
@@ -119,7 +128,7 @@ export default function PageRapportJournalier({ toast }) {
           {!loading && (
             <button onClick={exportCSV} disabled={exporting}
               style={{padding:"10px 18px",borderRadius:10,border:"1px solid rgba(255,255,255,0.12)",background:"rgba(255,255,255,0.05)",color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7,fontFamily:"inherit"}}>
-              {exporting?<Spinner size={14}/>:"↓"} Export CSV
+              {exporting?<Spinner size={14}/>:"↓"} Export XLSX
             </button>
           )}
           {!loading && <div style={{padding:"12px 22px",borderRadius:11,background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",color:"#f0c987",fontWeight:900,fontSize:22}}>{fmtShort(totalCA)}</div>}
@@ -146,8 +155,8 @@ export default function PageRapportJournalier({ toast }) {
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12,marginBottom:20}}>
             {[
               {label:"Chiffre d'affaires",val:totalCA,      color:"#f0c987",icon:"◈"},
-              {label:"Nb ventes",          val:orders.length,color:"#818cf8",icon:"⊞",isCt:true},
-              {label:"Panier moyen",        val:orders.length?totalCA/orders.length:0,color:"#34d399",icon:"◇"},
+              {label:"Nb ventes",          val:countCA,      color:"#818cf8",icon:"⊞",isCt:true},
+              {label:"Panier moyen",        val:countCA?totalCA/countCA:0,color:"#34d399",icon:"◇"},
               {label:"Total dépenses",      val:totalDepenses,color:"#f87171",icon:"◻"},
               {label:"Résultat net",         val:resultat,    color:resultat>=0?"#10b981":"#f87171",icon:resultat>=0?"▲":"▼"},
               {label:"Remises",             val:totalRemises, color:"#f59e0b",icon:"−"},
@@ -212,7 +221,7 @@ export default function PageRapportJournalier({ toast }) {
                         <>
                           <div style={{display:"flex",justifyContent:"space-between",width:"100%"}}>
                             <span style={{fontSize:12,color:"#64748b"}}>{heure}</span>
-                            <span style={{fontWeight:900,color:"#f0c987",fontSize:16}}>{fmt(order.total)}</span>
+                            <span style={{fontWeight:900,color:"#f0c987",fontSize:16}}>{fmt(orderRevenue(order))}</span>
                           </div>
                           <div style={{fontSize:14,fontWeight:700}}>{order.order_number||`#${order.id}`}</div>
                           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -229,7 +238,7 @@ export default function PageRapportJournalier({ toast }) {
                           <span style={{flex:1.2,fontSize:13,color:"#818cf8"}}>{order.employee_name||<span style={{color:"#334155"}}>—</span>}</span>
                           <span style={{flex:1}}><span style={{fontSize:12,padding:"3px 9px",borderRadius:20,background:pmtColor+"18",color:pmtColor,fontWeight:600}}>{PMTS[order.payment_method]||order.payment_method||"—"}</span></span>
                           <span style={{flex:0.8,textAlign:"right",fontSize:13,color:"#f59e0b"}}>{parseFloat(order.discount_amount||0)>0?"−"+fmt(order.discount_amount):"—"}</span>
-                          <span style={{flex:1,textAlign:"right",fontWeight:900,fontSize:15,color:"#f0c987"}}>{fmt(order.total)}</span>
+                          <span style={{flex:1,textAlign:"right",fontWeight:900,fontSize:15,color:"#f0c987"}}>{fmt(orderRevenue(order))}</span>
                         </>
                       )}
                     </div>
@@ -330,4 +339,3 @@ export default function PageRapportJournalier({ toast }) {
     </div>
   );
 }
-

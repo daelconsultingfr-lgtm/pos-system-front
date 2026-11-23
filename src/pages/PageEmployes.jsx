@@ -1,15 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
-import { GET, POST, PUT } from "../utils/api";
+import { GET, POST, PUT, DELETE } from "../utils/api";
 import { c } from "../utils/styles";
-import useBreakpoint from "../hooks/useBreakpoint";
 import Spinner from "../components/Spinner";
 import { Modal, ModalActions } from "../components/UI";
 
-const ROLE_LABELS  = { admin:"Admin", manager:"Manager", cashier:"Employé(e)" };
-const ROLE_COLORS  = { admin:"#f87171", manager:"#f59e0b", cashier:"#64748b" };
+const ROLE_LABELS  = { admin:"Admin", manager:"Manager", employee:"Employé(e)", accountable: "Comptable" };
+const ROLE_COLORS  = { admin:"#f87171", manager:"#f59e0b", employee:"#64748b" };
 const PRESET_COLORS = ["#f0c987","#818cf8","#34d399","#f472b6","#38bdf8","#fb923c","#a78bfa","#4ade80"];
 
-const EMPTY_FORM = { name:"", email:"", role:"cashier", color:"#f0c987", password:"" };
+const EMPTY_FORM = { name:"", email:"", role:"employee", color:"#f0c987", password:"" };
 
 export default function PageEmployes({ toast, currentUser }) {
   const [employees, setEmployees] = useState([]);
@@ -19,6 +18,8 @@ export default function PageEmployes({ toast, currentUser }) {
   const [form,      setForm]      = useState(EMPTY_FORM);
   const [saving,    setSaving]    = useState(false);
   const isAdmin = currentUser?.role === "admin";
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting,      setDeleting]      = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,11 +41,23 @@ export default function PageEmployes({ toast, currentUser }) {
     setForm({
       name:     emp.name  || "",
       email:    emp.email || "",
-      role:     emp.role  || "cashier",
+      role:     emp.role  || "employee",
       color:    emp.color || "#f0c987",
       password: "",   // vide = pas de changement
     });
     setShowForm(true);
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await DELETE(`/employees/${confirmDelete.id}`);
+      toast("Employé supprimé", "success");
+      setConfirmDelete(null);
+      await load();
+    } catch(e) { toast(e.message); }
+    finally { setDeleting(false); }
   };
 
   const handleSave = async () => {
@@ -94,15 +107,28 @@ export default function PageEmployes({ toast, currentUser }) {
 
                 {/* Bouton modifier (admin only) */}
                 {isAdmin && (
-                  <button
-                    onClick={()=>openEdit(emp)}
-                    style={{position:"absolute",top:14,right:14,background:"rgba(255,255,255,0.05)",
-                      border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,
-                      color:"#64748b",cursor:"pointer",fontSize:14,
-                      width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center"}}
-                    title="Modifier">
-                    ✎
-                  </button>
+                  <div style={{position:"absolute",top:14,right:14,display:"flex",gap:6}}>
+                    <button
+                      onClick={()=>openEdit(emp)}
+                      style={{background:"rgba(255,255,255,0.05)",
+                        border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,
+                        color:"#64748b",cursor:"pointer",fontSize:14,
+                        width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center"}}
+                      title="Modifier">
+                      ✎
+                    </button>
+                    {!isMe && (
+                      <button
+                        onClick={()=>setConfirmDelete(emp)}
+                        style={{background:"rgba(248,113,113,0.08)",
+                          border:"1px solid rgba(248,113,113,0.2)",borderRadius:8,
+                          color:"#f87171",cursor:"pointer",fontSize:14,
+                          width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center"}}
+                        title="Supprimer">
+                        🗑
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {/* Avatar */}
@@ -140,6 +166,35 @@ export default function PageEmployes({ toast, currentUser }) {
         </div>
       )}
 
+      {/* Modal confirmation suppression */}
+      {confirmDelete && (
+        <Modal title="Supprimer l'employé" onClose={()=>setConfirmDelete(null)}>
+          <div style={{textAlign:"center",padding:"10px 0 20px"}}>
+            <div style={{fontSize:40,marginBottom:14}}>🗑</div>
+            <div style={{fontSize:15,fontWeight:700,color:"#f8fafc",marginBottom:8}}>
+              Supprimer <span style={{color:"#f87171"}}>{confirmDelete.name}</span> ?
+            </div>
+            <div style={{fontSize:13,color:"#64748b",lineHeight:1.6}}>
+              Cette action est irréversible.<br/>
+              L'historique des ventes associées sera conservé.
+            </div>
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button style={{padding:"11px 18px",borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",
+              background:"transparent",color:"#94a3b8",fontSize:14,cursor:"pointer",fontWeight:600}}
+              onClick={()=>setConfirmDelete(null)}>Annuler</button>
+            <button style={{padding:"11px 22px",borderRadius:9,border:"none",
+              background:"linear-gradient(135deg,#f87171,#ef4444)",color:"#fff",
+              fontSize:14,cursor:"pointer",fontWeight:900,
+              display:"flex",alignItems:"center",gap:8}}
+              onClick={handleDelete} disabled={deleting}>
+              {deleting && <Spinner size={14} color="#fff"/>}
+              {deleting ? "Suppression…" : "Supprimer"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {/* Modal création / modification */}
       {showForm && (
         <Modal
@@ -168,7 +223,8 @@ export default function PageEmployes({ toast, currentUser }) {
               <label style={c.label}>Rôle</label>
               <select style={c.input} value={form.role}
                 onChange={e=>setForm(f=>({...f,role:e.target.value}))}>
-                <option value="cashier">Employé(e)</option>
+                <option value="accountable">Comptable</option>
+                <option value="employee">Employé(e)</option>
                 <option value="manager">Manager</option>
                 <option value="admin">Admin</option>
               </select>

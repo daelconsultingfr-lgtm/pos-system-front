@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { GET, POST, PUT, DELETE } from "../utils/api";
-import { fmt, fmtShort, fmtDate, MONTHS, PMTS, PMT_COLORS } from "../utils/format";
-import { c, navBtn, resetBtn } from "../utils/styles";
+import { fmt, MONTHS, PMTS, PMT_COLORS } from "../utils/format";
+import { c } from "../utils/styles";
 import useBreakpoint from "../hooks/useBreakpoint";
 import Spinner from "../components/Spinner";
 import { EmptyState, Modal, ModalActions } from "../components/UI";
@@ -21,7 +21,12 @@ export default function PagePrestations({ toast }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sRes,cRes] = await Promise.all([GET("/products?limit=200"), GET("/categories")]);
+      // kind=service : les produits physiques ont leur propre écran, avec le
+      // suivi de stock qui n'a pas de sens pour une prestation.
+      const [sRes,cRes] = await Promise.all([
+        GET("/products?kind=service&limit=500"),
+        GET("/categories?kind=service"),
+      ]);
       setServices(sRes.data); setCategories(cRes.data);
     } catch(e) { toast(e.message); }
     finally { setLoading(false); }
@@ -40,8 +45,9 @@ export default function PagePrestations({ toast }) {
     if (!form.name||!form.price) return toast("Nom et prix requis");
     setSaving(true);
     try {
-      if (editItem) { await PUT(`/products/${editItem.id}`, {...editItem,...form,price:parseFloat(form.price)}); toast("Prestation mise à jour","success"); }
-      else { await POST("/products", {...form,price:parseFloat(form.price)}); toast("Prestation ajoutée","success"); }
+      const payload = { ...form, price: parseFloat(form.price), kind: "service" };
+      if (editItem) { await PUT(`/products/${editItem.id}`, payload); toast("Prestation mise à jour","success"); }
+      else { await POST("/products", payload); toast("Prestation ajoutée","success"); }
       setShowForm(false); await load();
     } catch(e) { toast(e.message); }
     finally { setSaving(false); }
@@ -87,7 +93,7 @@ export default function PagePrestations({ toast }) {
             <div key={sv.id} style={{ ...c.tableRow, flexDirection:isMobile?"column":"row", alignItems:isMobile?"flex-start":"center", gap:isMobile?8:0 }}>
               <span style={{flex:3,fontWeight:700,fontSize:15}}>{sv.name}</span>
               {sv.category_name && <span style={{flex:2}}><span style={{...c.chip,background:(sv.category_color||"#888")+"22",color:sv.category_color||"#888"}}>{sv.category_name}</span></span>}
-              <span style={{flex:1,color:"#94a3b8",fontSize:13}}>{sv.duration||"—"} min</span>
+              <span style={{flex:1,color:"#94a3b8",fontSize:13}}>{sv.duration||"—"}</span>
               <span style={{flex:1,textAlign:isMobile?"left":"right",fontWeight:800,color:"#f0c987",fontSize:16}}>{fmt(sv.price)}</span>
               <span style={{flex:0.6,display:"flex",gap:8,justifyContent:isMobile?"flex-start":"flex-end"}}>
                 <button style={c.iconBtn} onClick={()=>openEdit(sv)}>✎</button>

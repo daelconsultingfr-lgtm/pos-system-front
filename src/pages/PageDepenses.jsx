@@ -6,8 +6,8 @@ import useBreakpoint from "../hooks/useBreakpoint";
 import Spinner from "../components/Spinner";
 import { EmptyState, Modal, ModalActions } from "../components/UI";
 
-const API_BASE    = "http://localhost:3000/api/v1";
-const SERVER_BASE = "http://localhost:3000"; // pour afficher les fichiers statiques
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+const SERVER_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/'; // pour afficher les fichiers statiques
 
 const CATEGORIES  = ["Matériel","Loyer","Stock","Salaires","Services","Autre"];
 const CAT_COLORS  = {
@@ -21,7 +21,7 @@ async function uploadFile(file, date) {
   const fd = new FormData();
   fd.append("file", file);
   if (date) fd.append("date", date);
-  const res = await fetch(`${API_BASE}/upload/receipt`, {
+  const res = await fetch(`${BASE_URL}/upload/receipt`, {
     method: "POST",
     headers: { Authorization: `Bearer ${getToken()}` },
     body: fd,
@@ -33,49 +33,36 @@ async function uploadFile(file, date) {
 
 // ─── Extraction IA du montant uniquement ─────────────────────────────────────
 async function extractAmountWithAI(file) {
-  const toBase64 = (f) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(f);
-  });
+  try {
+    const toBase64 = (f) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(f);
+    });
 
-  const isPdf    = file.type === "application/pdf";
-  const base64   = await toBase64(file);
-  const mediaType = file.type;
+    const isPdf     = file.type === "application/pdf";
+    const base64    = await toBase64(file);
+    const mediaType = file.type || (isPdf ? "application/pdf" : "image/jpeg");
 
-  const body = {
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 100,
-    messages: [{
-      role: "user",
-      content: [
-        isPdf
-          ? { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } }
-          : { type:"image",    source:{ type:"base64", media_type:mediaType,          data:base64 } },
-        { type:"text", text:`Extrais uniquement le montant TOTAL TTC de cette facture/ticket.
-Réponds en JSON strict : {"amount": nombre}
-Exemple : {"amount": 24.50}
-Ne renvoie QUE le JSON, sans markdown.` }
-      ]
-    }]
-  };
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  const text = (data.content || []).map(b => b.text || "").join("").trim();
-  const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-  return parsed.amount ?? null;
+    // Envoi au backend qui détient la clé Anthropic
+    const res  = await POST("/ai/extract-amount", { imageBase64: base64, mediaType });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || "Erreur IA");
+    const amount      = data.amount;
+    const description = data.description || null;
+    const parsedAmount = (!amount || amount === "null") ? null : parseFloat(String(amount).replace(",", ".")) || null;
+    return { amount: parsedAmount, description };
+  } catch (err) {
+    console.error("extractAmountWithAI error:", err);
+    return null;
+  }
 }
 
 // ─── Vignette / aperçu d'un fichier ──────────────────────────────────────────
 function FilePreview({ src, onRemove, label = "" }) {
   const isPdf = src && (src.endsWith(".pdf") || src.includes("application/pdf"));
-  const url   = src?.startsWith("blob:") || src?.startsWith("data:")
+  const url   = src?.startsWith("blob:") || src?.startsWith("data:") || src?.startsWith("http")
     ? src
     : SERVER_BASE + src;
 
@@ -113,7 +100,9 @@ function FilePreview({ src, onRemove, label = "" }) {
 // ─── Modal visionneuse de justificatif ───────────────────────────────────────
 function ReceiptViewer({ expense, onClose }) {
   const isPdf = expense.receipt_url?.endsWith(".pdf");
-  const url   = SERVER_BASE + expense.receipt_url;
+  const url   = expense.receipt_url?.startsWith("http")
+    ? expense.receipt_url
+    : SERVER_BASE + expense.receipt_url;
   return (
     <Modal title={`Justificatif — ${expense.label}`} onClose={onClose}>
       <div style={{ textAlign:"center" }}>
@@ -235,11 +224,15 @@ export default function PageDepenses({ toast }) {
     // Extraction IA du montant
     setAiLoading(true);
     try {
-      const amount = await extractAmountWithAI(file);
-      if (amount !== null) {
-        setForm(f=>({...f, amount: String(amount)}));
+      const result = await extractAmountWithAI(file);
+      if (result && result.amount !== null) {
+        setForm(f=>({
+          ...f,
+          amount: String(result.amount),
+          ...(result.description ? { label: result.description } : {}),
+        }));
         setAiDone(true);
-        toast(`Montant extrait : ${fmt(amount)}`, "success");
+        toast(`Montant extrait : ${fmt(result.amount)}${result.description ? ` — ${result.description}` : ""}`, "success");
       } else {
         toast("Montant non détecté — à saisir manuellement", "warn");
       }
@@ -301,7 +294,7 @@ export default function PageDepenses({ toast }) {
     setExporting(true);
     try {
       const mm  = String(selMonth + 1).padStart(2, "0");
-      const url = `${API_BASE}/export/depenses?year=${selYear}&month=${mm}`;
+      const url = `${BASE_URL}/export/depenses?year=${selYear}&month=${mm}`;
       const res = await fetch(url, { headers: { Authorization: `Bearer ${getToken()}` } });
       if (!res.ok) throw new Error("Erreur export");
       const blob = await res.blob();

@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { GET, POST, PUT, DELETE } from "../utils/api";
-import { fmt, fmtShort, fmtDate, MONTHS, PMTS, PMT_COLORS, PAYMENT_METHODS } from "../utils/format";
-import { c, navBtn, resetBtn } from "../utils/styles";
+import { useState, useEffect } from "react";
+import { GET, POST } from "../utils/api";
+import { enqueue, isNetworkFailure, pendingCount, flush, watchConnection } from "../utils/offline";
+import { fmt, MONTHS, PMTS, PMT_COLORS, PAYMENT_METHODS } from "../utils/format";
+import { c } from "../utils/styles";
 import useBreakpoint from "../hooks/useBreakpoint";
 import Spinner from "../components/Spinner";
 import { EmptyState, Modal, ModalActions } from "../components/UI";
@@ -25,11 +26,14 @@ export default function PageEncaissement({ toast }) {
   const [paymentLines, setPaymentLines] = useState([{id:1,key:"card",amount:""}]);
   const [loading, setLoading]         = useState(true);
   const [submitting, setSubmitting]   = useState(false);
+  const [online,     setOnline]       = useState(navigator.onLine);
+  const [pending,    setPending]      = useState(pendingCount);
   const [successData, setSuccessData] = useState(null);
   const [notes, setNotes]             = useState("");
-  const [orderDate, setOrderDate]     = useState(new Date().toISOString().split("T")[0]);
-  const [catOpen, setCatOpen]         = useState(false);
-  const { isMobile, isTablet, w }     = useBreakpoint();
+  const [orderDate, setOrderDate]     = useState(() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; });
+  const TODAY = (() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+  const [mobileTab, setMobileTab]     = useState("infos"); // "infos" | "paiement"
+  const { isMobile, isTablet }        = useBreakpoint();
 
   useEffect(()=>{
     (async()=>{
@@ -48,25 +52,67 @@ export default function PageEncaissement({ toast }) {
 
   useEffect(()=>{
     if (customerSearch.length<2) { setCustomers([]); return; }
-    const t = setTimeout(async()=>{ try { const res=await GET(`/customers?search=${encodeURIComponent(customerSearch)}&limit=10`); setCustomers(res.data); } catch{} },300);
+    // Un catch vide masquait totalement l'échec de la recherche : l'utilisateur
+    // voyait une liste vide sans distinguer « aucun résultat » d'une panne.
+    const t = setTimeout(async()=>{
+      try {
+        const res = await GET(`/customers?search=${encodeURIComponent(customerSearch)}&limit=10`);
+        setCustomers(res.data);
+      } catch(e) {
+        setCustomers([]);
+        toast(`Recherche client indisponible : ${e.message}`);
+      }
+    },300);
     return ()=>clearTimeout(t);
   },[customerSearch]);
 
   const allCats = [{id:"all",name:"Tout",color:"#f0c987",icon:"✦"},...categories];
+  // Normalise : supprime accents + minuscules pour une recherche sans accent
+  const normalize = str => str?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"") || "";
+
+  const searchQ = normalize(serviceSearch);
   const filtered = (activeCategory==="all" ? services : services.filter(s=>s.category_id===activeCategory))
-    .filter(s => !serviceSearch || s.name.toLowerCase().includes(serviceSearch.toLowerCase()));
+    .filter(s => {
+      if (!serviceSearch) return true;
+      // Recherche par nom (sans accent)
+      if (normalize(s.name).includes(searchQ)) return true;
+      // Recherche par prix : "15", "15.5", "15,5"
+      const priceStr = String(parseFloat(s.price)||0);
+      const searchPrice = searchQ.replace(",",".");
+      if (priceStr.startsWith(searchPrice)) return true;
+      return false;
+    });
   const filteredEmps = employees.filter(e => !employeeSearch || e.name.toLowerCase().includes(employeeSearch.toLowerCase()));
 
-  const addToCart = (sv) => setCart(prev=>{
-    const ex=prev.find(i=>i.id===sv.id);
-    if (ex) return prev.map(i=>i.id===sv.id?{...i,qty:i.qty+1}:i);
-    return [...prev,{...sv,qty:1}];
-  });
+  // Un produit physique ne peut pas être vendu au-delà de son stock : mieux
+  // vaut le dire à l'ajout au panier que laisser l'API refuser l'encaissement
+  // une fois le client devant la caisse.
+  const addToCart = (sv) => {
+    const isProduct = sv.kind === "product";
+    const stock = parseInt(sv.stock) || 0;
+    const inCart = cart.find(i=>i.id===sv.id)?.qty || 0;
+    if (isProduct && inCart + 1 > stock) {
+      toast(stock === 0
+        ? `« ${sv.name} » est en rupture de stock`
+        : `Stock insuffisant : ${stock} unité${stock>1?"s":""} de « ${sv.name} »`);
+      return;
+    }
+    setCart(prev=>{
+      const ex=prev.find(i=>i.id===sv.id);
+      if (ex) return prev.map(i=>i.id===sv.id?{...i,qty:i.qty+1}:i);
+      return [...prev,{...sv,qty:1}];
+    });
+  };
   const removeFromCart  = (id) => setCart(prev=>{ const item=prev.find(i=>i.id===id); if(item.qty>1) return prev.map(i=>i.id===id?{...i,qty:i.qty-1}:i); return prev.filter(i=>i.id!==id); });
   const deleteFromCart  = (id) => setCart(prev=>prev.filter(i=>i.id!==id));
 
+  // ── Réduction fidélité automatique selon les points du client
+  const loyaltyPoints   = selectedCustomer?.loyalty_points || 0;
+  const loyaltyDiscount = loyaltyPoints >= 10 ? 25 : loyaltyPoints >= 5 ? 10 : 0;
+  const effectiveDiscount = discount !== "" ? parseFloat(discount) : loyaltyDiscount;
+
   const subtotal       = cart.reduce((s,i)=>s+i.price*i.qty,0);
-  const discountAmount = discount ? subtotal*(parseFloat(discount)/100) : 0;
+  const discountAmount = effectiveDiscount ? subtotal*(effectiveDiscount/100) : 0;
   const feesVal        = parseFloat(additionalFees)||0;
   const feesAmount     = feesType==="add" ? feesVal : -feesVal;
   const total          = Math.max(0,subtotal-discountAmount+feesAmount);
@@ -85,10 +131,19 @@ export default function PageEncaissement({ toast }) {
   const updateLine    = (id,field,val) => setPaymentLines(prev=>prev.map(p=>p.id===id?{...p,[field]:val}:p));
   const setExact      = (id) => { const other=paymentLines.filter(p=>p.id!==id).reduce((s,p)=>s+(parseFloat(p.amount)||0),0); updateLine(id,"amount",Math.max(0,total-other).toFixed(2)); };
 
+  // Rejeu automatique des ventes mises en attente dès le retour du réseau.
+  useEffect(()=>watchConnection(async (isOnline)=>{
+    setOnline(isOnline);
+    if (!isOnline || pendingCount()===0) return;
+    const { sent, failed, remaining } = await flush();
+    setPending(remaining);
+    if (sent)          toast(`${sent} vente${sent>1?"s":""} en attente enregistrée${sent>1?"s":""}`,"success");
+    failed.forEach(f=> toast(`Vente en attente refusée : ${f.error}`));
+  }),[toast]);
+
   const handleEncaisser = async () => {
     setSubmitting(true);
-    try {
-      const res = await POST("/orders",{
+    const payload = {
         customer_id:  selectedCustomer?.id||undefined,
         employee_id:  selectedEmployee?.id||undefined,
         order_date:   orderDate,
@@ -97,9 +152,25 @@ export default function PageEncaissement({ toast }) {
         additionnal_fees: feesAmount,
         notes: notes||undefined,
         payment_breakdown: paymentLines.filter(p=>(parseFloat(p.amount)||0)>0).map(p=>({method:p.key,amount:parseFloat(p.amount)})),
-      });
+    };
+
+    try {
+      const res = await POST("/orders", payload);
       setSuccessData(res.data); setScreen("success");
-    } catch(e) { toast(e.message); }
+    } catch(e) {
+      // Une panne réseau ne doit pas faire perdre la vente : on la met en
+      // attente et on la rejouera. Un refus du serveur, lui, doit être corrigé
+      // par le caissier — le rejouer à l'identique échouerait pareillement.
+      if (isNetworkFailure(e)) {
+        const n = enqueue(payload);
+        setPending(n);
+        setSuccessData({ order_number: "EN ATTENTE", total: total, _offline: true });
+        setScreen("success");
+        toast("Réseau indisponible : la vente est enregistrée et partira au retour de la connexion","warn");
+      } else {
+        toast(e.message);
+      }
+    }
     finally { setSubmitting(false); }
   };
 
@@ -109,13 +180,28 @@ export default function PageEncaissement({ toast }) {
     setSuccessData(null); setNotes(""); setServiceSearch("");
     setSelectedCustomer(null); setCustomerSearch("");
     setSelectedEmployee(null); setEmployeeSearch("");
-    setOrderDate(new Date().toISOString().split("T")[0]);
+    setOrderDate(TODAY);
+    setMobileTab("infos");
     setScreen("caisse");
   };
 
   // ── ÉCRAN CAISSE ──────────────────────────────────────────────────────────
+  // Bandeau d'etat : le caissier doit savoir qu'il travaille hors ligne AVANT
+  // d'encaisser, pas au moment ou la vente echoue.
+  const netBanner = (!online || pending>0) && (
+    <div style={{position:"fixed",top:0,left:0,right:0,zIndex:150,
+      padding:"7px 16px",textAlign:"center",fontSize:12.5,fontWeight:700,
+      background: online ? "rgba(245,158,11,0.95)" : "rgba(248,113,113,0.95)",
+      color:"#0a0d14"}}>
+      {!online
+        ? `Hors ligne — les ventes sont conservées et partiront au retour du réseau${pending?` (${pending} en attente)`:""}`
+        : `${pending} vente${pending>1?"s":""} en attente d'envoi…`}
+    </div>
+  );
+
   if (screen==="caisse") return (
     <div className="caisse-root">
+      {netBanner}
       {/* ── Catégories : colonne gauche desktop, barre top mobile ── */}
       <aside className="caisse-cats">
         <div className="caisse-cats-title">Catégories</div>
@@ -159,13 +245,27 @@ export default function PageEncaissement({ toast }) {
                 {filtered.map(sv=>{
                   const inCart = cart.find(i=>i.id===sv.id);
                   const color  = sv.category_color||"#f0c987";
+                  // Stock restant compte tenu de ce qui est déjà au panier.
+                  const stockLeft = (parseInt(sv.stock)||0) - (inCart?.qty||0);
+                  const soldOut = sv.kind === "product" && stockLeft <= 0;
                   return (
                     <button key={sv.id} className="caisse-service-btn service-btn"
-                      style={inCart?{borderColor:color+"66",background:color+"10"}:{}}
+                      style={{
+                        ...(inCart?{borderColor:color+"66",background:color+"10"}:{}),
+                        ...(soldOut?{opacity:0.45}:{}),
+                      }}
                       onClick={()=>addToCart(sv)}>
                       {inCart && <span className="caisse-badge" style={{background:color,color:"#0a0d14"}}>{inCart.qty}</span>}
                       <span className="caisse-sv-name" style={inCart?{paddingRight:24}:{}}>{sv.name}</span>
-                      <span className="caisse-sv-price" style={{color}}>{fmt(sv.price)}</span>
+                      <span style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:6}}>
+                        <span className="caisse-sv-price" style={{color}}>{fmt(sv.price)}</span>
+                        {sv.kind === "product" && (
+                          <span style={{fontSize:10.5,fontWeight:800,
+                            color: stockLeft <= 0 ? "#f87171" : stockLeft <= (parseInt(sv.stock_alert)||0) ? "#f59e0b" : "#64748b"}}>
+                            {stockLeft <= 0 ? "rupture" : `${stockLeft} en stock`}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   );
                 })}
@@ -227,15 +327,14 @@ export default function PageEncaissement({ toast }) {
   );
 
   // ── ÉCRAN PAIEMENT ────────────────────────────────────────────────────────
-  if (screen==="paiement") return (
-    <div style={{display:"flex",flex:1,height:`calc(100vh - ${isMobile?58:72}px)`,overflow:"hidden",flexDirection:isMobile?"column":"row"}}>
-      {/* Colonne gauche */}
-      <div style={{flex:1,padding:isMobile?"14px":"22px 26px",overflowY:"auto",borderRight:isMobile?"none":"1px solid rgba(255,255,255,0.06)"}}>
-        <button style={{background:"none",border:"1px solid rgba(255,255,255,0.08)",color:"#94a3b8",padding:"8px 14px",borderRadius:9,cursor:"pointer",fontSize:14,marginBottom:18}} onClick={()=>setScreen("caisse")}>← Retour</button>
-        <div style={{fontSize:isMobile?18:22,fontWeight:900,marginBottom:18}}>Finaliser la vente</div>
+  if (screen==="paiement") {
+
+    // JSX infos — pas de sous-composant pour éviter le remontage à chaque render
+    const sectionInfos = (
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
 
         {/* Articles */}
-        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px",marginBottom:14}}>
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px"}}>
           <div style={c.cardTitle}>Prestations</div>
           {cart.map(item=>(
             <div key={item.id} style={{display:"flex",justifyContent:"space-between",fontSize:14,padding:"4px 0",color:"#cbd5e1"}}>
@@ -247,8 +346,8 @@ export default function PageEncaissement({ toast }) {
           <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:15}}><span>Sous-total</span><span>{fmt(subtotal)}</span></div>
         </div>
 
-        {/* Client, Employé & Notes */}
-        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px",marginBottom:14}}>
+        {/* Client, Employé, Notes, Date */}
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px"}}>
           <div style={c.cardTitle}>Client & Employé</div>
 
           {/* Date */}
@@ -256,39 +355,48 @@ export default function PageEncaissement({ toast }) {
             <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Date de la vente</label>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
               <input type="date" style={{...c.input,flex:1}}
-                value={orderDate} max={new Date().toISOString().split("T")[0]}
+                value={orderDate}
                 onChange={e=>setOrderDate(e.target.value)}/>
-              {orderDate!==new Date().toISOString().split("T")[0] && (
+              {orderDate!==TODAY && (
                 <span style={{fontSize:12,color:"#f87171",fontWeight:700,padding:"5px 10px",borderRadius:8,background:"rgba(248,113,113,0.1)",border:"1px solid rgba(248,113,113,0.2)",flexShrink:0,whiteSpace:"nowrap"}}>⚠ Antidatée</span>
               )}
             </div>
           </div>
 
-          {/* Sélecteur client */}
+          {/* Client */}
           <div style={{marginBottom:14}}>
             <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Client (optionnel)</label>
-            <div style={{position:"relative"}}>
+            <div style={{position:"relative",zIndex:40}}>
               {selectedCustomer ? (
                 <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:10,background:"rgba(240,201,135,0.08)",border:"1px solid rgba(240,201,135,0.2)"}}>
                   <span style={c.avatar}>{(selectedCustomer.name||"?")[0]}</span>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:14,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{selectedCustomer.name}</div>
                     {selectedCustomer.phone && <div style={{fontSize:12,color:"#64748b"}}>{selectedCustomer.phone}</div>}
+                    {loyaltyPoints > 0 && (
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginTop:3}}>
+                        <span style={{fontSize:11,color:loyaltyDiscount>0?"#10b981":"#f0c987",fontWeight:700,background:loyaltyDiscount>0?"rgba(16,185,129,0.12)":"rgba(240,201,135,0.1)",padding:"2px 8px",borderRadius:20,border:`1px solid ${loyaltyDiscount>0?"rgba(16,185,129,0.3)":"rgba(240,201,135,0.2)"}`}}>
+                          ⭐ {loyaltyPoints} pts{loyaltyDiscount > 0 ? ` → −${loyaltyDiscount}% appliqué` : ""}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:16,lineHeight:1}} onClick={()=>{setSelectedCustomer(null);setCustomerSearch("");}}>✕</button>
+                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:20,lineHeight:1,padding:"4px 8px"}} onClick={()=>{setSelectedCustomer(null);setCustomerSearch("");}}>✕</button>
                 </div>
               ) : (
                 <>
-                  <input style={{...c.input,width:"100%"}} placeholder="Rechercher un client…" value={customerSearch} onChange={e=>setCustomerSearch(e.target.value)}/>
+                  <input style={{...c.input,width:"100%",fontSize:16}} placeholder="Rechercher un client…" value={customerSearch}
+                    onChange={e=>setCustomerSearch(e.target.value)} autoComplete="off"/>
                   {customers.length>0 && (
-                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:30,overflow:"hidden",boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
+                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:50,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.7)"}}>
                       {customers.map(cl=>(
-                        <div key={cl.id} style={{padding:"11px 15px",cursor:"pointer",fontSize:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                        <div key={cl.id} style={{padding:"13px 15px",cursor:"pointer",fontSize:15,display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid rgba(255,255,255,0.04)"}}
                           onMouseDown={e=>{e.preventDefault();setSelectedCustomer(cl);setCustomers([]);setCustomerSearch("");}}
-                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.05)"}
+                          onTouchStart={()=>{setSelectedCustomer(cl);setCustomers([]);setCustomerSearch("");}}
+                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.06)"}
                           onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                           <span style={{fontWeight:600}}>{cl.name}</span>
-                          <span style={{color:"#64748b",fontSize:12}}>{cl.phone}</span>
+                          <span style={{color:"#64748b",fontSize:13}}>{cl.phone}</span>
                         </div>
                       ))}
                     </div>
@@ -298,32 +406,34 @@ export default function PageEncaissement({ toast }) {
             </div>
           </div>
 
-          {/* Sélecteur employé */}
+          {/* Employé — même pattern que client */}
           <div style={{marginBottom:14}}>
             <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Employé (optionnel)</label>
-            <div style={{position:"relative"}}>
+            <div style={{position:"relative",zIndex:30}}>
               {selectedEmployee ? (
                 <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:10,background:(selectedEmployee.color||"#818cf8")+"12",border:`1px solid ${(selectedEmployee.color||"#818cf8")}44`}}>
-                  <div style={{width:32,height:32,borderRadius:"50%",background:(selectedEmployee.color||"#818cf8")+"22",color:selectedEmployee.color||"#818cf8",fontSize:12,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                  <div style={{width:36,height:36,borderRadius:"50%",background:(selectedEmployee.color||"#818cf8")+"22",color:selectedEmployee.color||"#818cf8",fontSize:13,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                     {(selectedEmployee.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()}
                   </div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:14,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{selectedEmployee.name}</div>
                     <div style={{fontSize:12,color:"#64748b",textTransform:"capitalize"}}>{selectedEmployee.role}</div>
                   </div>
-                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:16,lineHeight:1}} onClick={()=>{setSelectedEmployee(null);setEmployeeSearch("");}}>✕</button>
+                  <button style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:20,lineHeight:1,padding:"4px 8px"}} onClick={()=>setSelectedEmployee(null)}>✕</button>
                 </div>
               ) : (
                 <>
-                  <input style={{...c.input,width:"100%"}} placeholder="Rechercher un employé…" value={employeeSearch} onChange={e=>setEmployeeSearch(e.target.value)}/>
-                  {employeeSearch.length > 0 && filteredEmps.length > 0 && (
-                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:30,overflow:"hidden",boxShadow:"0 8px 24px rgba(0,0,0,0.5)",maxHeight:220,overflowY:"auto"}}>
+                  <input style={{...c.input,width:"100%",fontSize:16}} placeholder="Rechercher un employé…" value={employeeSearch}
+                    onChange={e=>setEmployeeSearch(e.target.value)} autoComplete="off"/>
+                  {employeeSearch.length>0 && filteredEmps.length>0 && (
+                    <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,background:"#0d1117",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,zIndex:50,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.7)",maxHeight:220,overflowY:"auto"}}>
                       {filteredEmps.map(emp=>(
-                        <div key={emp.id} style={{padding:"11px 15px",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",gap:12}}
+                        <div key={emp.id} style={{padding:"13px 15px",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",gap:12,borderBottom:"1px solid rgba(255,255,255,0.04)"}}
                           onMouseDown={e=>{e.preventDefault();setSelectedEmployee(emp);setEmployeeSearch("");}}
-                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.05)"}
+                          onTouchStart={()=>{setSelectedEmployee(emp);setEmployeeSearch("");}}
+                          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.06)"}
                           onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                          <div style={{width:30,height:30,borderRadius:"50%",background:(emp.color||"#818cf8")+"22",color:emp.color||"#818cf8",fontSize:11,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                          <div style={{width:32,height:32,borderRadius:"50%",background:(emp.color||"#818cf8")+"22",color:emp.color||"#818cf8",fontSize:11,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                             {(emp.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()}
                           </div>
                           <span style={{fontWeight:600,flex:1}}>{emp.name}</span>
@@ -340,7 +450,7 @@ export default function PageEncaissement({ toast }) {
           {/* Notes */}
           <div>
             <label style={{fontSize:11,color:"#64748b",fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:6}}>Notes (optionnel)</label>
-            <input style={{...c.input,width:"100%"}} placeholder="Remarques…" value={notes} onChange={e=>setNotes(e.target.value)}/>
+            <input style={{...c.input,width:"100%",fontSize:16}} placeholder="Remarques…" value={notes} onChange={e=>setNotes(e.target.value)}/>
           </div>
         </div>
 
@@ -351,73 +461,81 @@ export default function PageEncaissement({ toast }) {
             <div style={{flex:"1 1 140px",display:"flex",flexDirection:"column",gap:7}}>
               <label style={{fontSize:12,color:"#94a3b8",fontWeight:500}}>Réduction (%)</label>
               <div style={{position:"relative",display:"flex",alignItems:"center"}}>
-                <input type="number" min="0" max="100" style={{...c.input,width:"100%",paddingRight:28}} value={discount} onChange={e=>setDiscount(e.target.value)} placeholder="0"/>
+                <input type="number" min="0" max="100" inputMode="numeric" style={{...c.input,width:"100%",paddingRight:28,fontSize:16,opacity:loyaltyDiscount>0&&discount===""?0.6:1}} value={discount!==""?discount:loyaltyDiscount||""} onChange={e=>setDiscount(e.target.value)} placeholder="0"/>
                 <span style={{position:"absolute",right:10,color:"#64748b",fontSize:13,pointerEvents:"none"}}>%</span>
               </div>
-              {discountAmount>0 && <span style={{fontSize:13,color:"#f0c987",fontWeight:700}}>− {fmt(discountAmount)}</span>}
+              {loyaltyDiscount>0&&discount===""&&<span style={{fontSize:12,color:"#10b981",fontWeight:700}}>⭐ Fidélité −{loyaltyDiscount}% auto</span>}
+              {discountAmount>0&&<span style={{fontSize:13,color:"#f0c987",fontWeight:700}}>− {fmt(discountAmount)}</span>}
             </div>
             <div style={{flex:"1 1 160px",display:"flex",flexDirection:"column",gap:7}}>
               <label style={{fontSize:12,color:"#94a3b8",fontWeight:500}}>Frais additionnels</label>
               <div style={{display:"flex",gap:8}}>
-                <button style={{width:36,height:44,borderRadius:8,border:`1px solid ${feesType==="add"?"rgba(240,201,135,0.4)":"rgba(255,255,255,0.1)"}`,background:feesType==="add"?"rgba(240,201,135,0.15)":"transparent",color:feesType==="add"?"#f0c987":"#94a3b8",fontSize:18,cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>setFeesType("add")}>+</button>
-                <button style={{width:36,height:44,borderRadius:8,border:`1px solid ${feesType==="sub"?"rgba(240,201,135,0.4)":"rgba(255,255,255,0.1)"}`,background:feesType==="sub"?"rgba(240,201,135,0.15)":"transparent",color:feesType==="sub"?"#f0c987":"#94a3b8",fontSize:18,cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>setFeesType("sub")}>−</button>
+                <button style={{width:44,height:44,borderRadius:8,border:`1px solid ${feesType==="add"?"rgba(240,201,135,0.4)":"rgba(255,255,255,0.1)"}`,background:feesType==="add"?"rgba(240,201,135,0.15)":"transparent",color:feesType==="add"?"#f0c987":"#94a3b8",fontSize:18,cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>setFeesType("add")}>+</button>
+                <button style={{width:44,height:44,borderRadius:8,border:`1px solid ${feesType==="sub"?"rgba(240,201,135,0.4)":"rgba(255,255,255,0.1)"}`,background:feesType==="sub"?"rgba(240,201,135,0.15)":"transparent",color:feesType==="sub"?"#f0c987":"#94a3b8",fontSize:18,cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>setFeesType("sub")}>−</button>
                 <div style={{position:"relative",flex:1,display:"flex",alignItems:"center"}}>
-                  <input type="number" min="0" style={{...c.input,width:"100%",paddingRight:28}} value={additionalFees} onChange={e=>setAdditionalFees(e.target.value)} placeholder="0"/>
+                  <input type="number" min="0" inputMode="decimal" style={{...c.input,width:"100%",paddingRight:28,fontSize:16}} value={additionalFees} onChange={e=>setAdditionalFees(e.target.value)} placeholder="0"/>
                   <span style={{position:"absolute",right:10,color:"#64748b",fontSize:13,pointerEvents:"none"}}>€</span>
                 </div>
               </div>
-              {feesVal>0 && <span style={{fontSize:13,color:"#f0c987",fontWeight:700}}>{feesType==="add"?"+":"−"} {fmt(feesVal)}</span>}
+              {feesVal>0&&<span style={{fontSize:13,color:"#f0c987",fontWeight:700}}>{feesType==="add"?"+":"−"} {fmt(feesVal)}</span>}
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Colonne droite */}
-      <div style={{width:isMobile?"100%":isTablet?"310px":"380px",flexShrink:0,padding:isMobile?"14px":"22px 20px",overflowY:"auto",display:"flex",flexDirection:"column",gap:14}}>
-        {/* Total */}
+        {isMobile && (
+          <button style={{padding:"16px",borderRadius:12,border:"none",background:"linear-gradient(135deg,#f0c987,#e8a44e)",color:"#0a0d14",fontWeight:900,fontSize:16,cursor:"pointer",width:"100%"}}
+            onClick={()=>setMobileTab("paiement")}>
+            Passer au paiement → {fmt(total)}
+          </button>
+        )}
+      </div>
+    );
+
+    // JSX paiement
+    const sectionPaiement = (
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
         <div style={{background:"linear-gradient(135deg,rgba(240,201,135,0.12),rgba(232,164,78,0.08))",border:"1px solid rgba(240,201,135,0.25)",borderRadius:15,padding:"22px",textAlign:"center"}}>
           <div style={{fontSize:12,color:"#94a3b8",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Total à encaisser</div>
-          <div style={{fontSize:isMobile?32:38,fontWeight:900,color:"#f0c987",letterSpacing:"-0.02em"}}>{fmt(total)}</div>
-          {(discountAmount>0||feesVal>0) && (
+          <div style={{fontSize:isMobile?36:38,fontWeight:900,color:"#f0c987",letterSpacing:"-0.02em"}}>{fmt(total)}</div>
+          {(discountAmount>0||feesVal>0)&&(
             <div style={{display:"flex",justifyContent:"center",gap:8,marginTop:10,flexWrap:"wrap"}}>
-              {discountAmount>0 && <span style={{fontSize:12,color:"#94a3b8",background:"rgba(255,255,255,0.06)",padding:"4px 10px",borderRadius:20}}>Remise −{fmt(discountAmount)}</span>}
-              {feesVal>0 && <span style={{fontSize:12,color:"#94a3b8",background:"rgba(255,255,255,0.06)",padding:"4px 10px",borderRadius:20}}>{feesType==="add"?"+":"−"}{fmt(feesVal)}</span>}
+              {discountAmount>0&&<span style={{fontSize:12,color:loyaltyDiscount>0&&discount===""?"#10b981":"#94a3b8",background:"rgba(255,255,255,0.06)",padding:"4px 10px",borderRadius:20}}>{loyaltyDiscount>0&&discount===""?"⭐ Fidélité ":""}Remise −{fmt(discountAmount)}</span>}
+              {feesVal>0&&<span style={{fontSize:12,color:"#94a3b8",background:"rgba(255,255,255,0.06)",padding:"4px 10px",borderRadius:20}}>{feesType==="add"?"+":"−"}{fmt(feesVal)}</span>}
             </div>
           )}
         </div>
 
-        {/* Paiements */}
         <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:13,padding:"16px 18px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <div style={c.cardTitle}>Modes de paiement</div>
-            {availMethods.length>0 && <button style={{fontSize:12,color:"#f0c987",background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",borderRadius:8,padding:"5px 11px",cursor:"pointer",fontWeight:700}} onClick={addPayLine}>+ Ajouter</button>}
+            {availMethods.length>0&&<button style={{fontSize:12,color:"#f0c987",background:"rgba(240,201,135,0.1)",border:"1px solid rgba(240,201,135,0.2)",borderRadius:8,padding:"6px 12px",cursor:"pointer",fontWeight:700}} onClick={addPayLine}>+ Ajouter</button>}
           </div>
           {paymentLines.map(line=>{
             const method=PAYMENT_METHODS.find(m=>m.key===line.key);
             const amt=parseFloat(line.amount)||0;
             return (
               <div key={line.id} style={{marginBottom:14,padding:"13px 14px",borderRadius:11,border:"1px solid rgba(255,255,255,0.07)",background:"rgba(255,255,255,0.02)"}}>
-                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:11,flexWrap:"wrap"}}>
+                <div style={isMobile?{display:"flex",gap:6,marginBottom:11,overflowX:"auto",paddingBottom:4,flexWrap:"nowrap"}:{display:"flex",gap:6,marginBottom:11,flexWrap:"wrap"}}>
                   {PAYMENT_METHODS.map(m=>(
                     <button key={m.key} disabled={usedKeys.includes(m.key)&&m.key!==line.key}
-                      style={{padding:"6px 11px",borderRadius:8,border:`1px solid ${line.key===m.key?m.color:"rgba(255,255,255,0.1)"}`,background:line.key===m.key?m.color+"18":"transparent",color:line.key===m.key?m.color:"#64748b",fontSize:13,cursor:usedKeys.includes(m.key)&&m.key!==line.key?"not-allowed":"pointer",fontWeight:line.key===m.key?700:500,opacity:usedKeys.includes(m.key)&&m.key!==line.key?0.3:1}}
+                      style={{padding:"7px 12px",borderRadius:8,border:`1px solid ${line.key===m.key?m.color:"rgba(255,255,255,0.1)"}`,background:line.key===m.key?m.color+"18":"transparent",color:line.key===m.key?m.color:"#64748b",fontSize:13,cursor:usedKeys.includes(m.key)&&m.key!==line.key?"not-allowed":"pointer",fontWeight:line.key===m.key?700:500,opacity:usedKeys.includes(m.key)&&m.key!==line.key?0.3:1,flexShrink:isMobile?0:undefined,whiteSpace:"nowrap"}}
                       onClick={()=>updateLine(line.id,"key",m.key)}>{m.icon} {m.label}</button>
                   ))}
-                  {paymentLines.length>1 && <button style={{background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:13,marginLeft:"auto"}} onClick={()=>removePayLine(line.id)}>✕</button>}
+                  {paymentLines.length>1&&<button style={{background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:16,marginLeft:"auto",flexShrink:0,padding:"0 4px"}} onClick={()=>removePayLine(line.id)}>✕</button>}
                 </div>
                 <div style={{display:"flex",gap:10,alignItems:"center"}}>
                   <div style={{position:"relative",flex:1,display:"flex",alignItems:"center"}}>
-                    <input type="number" min="0" step="0.01"
-                      style={{width:"100%",padding:"12px 36px 12px 14px",borderRadius:9,border:`1px solid ${amt>0?(method?.color||"#f0c987"):"rgba(255,255,255,0.1)"}`,background:"rgba(255,255,255,0.05)",color:"#f8fafc",fontSize:isMobile?22:24,fontWeight:900,outline:"none",boxSizing:"border-box",transition:"border-color 0.2s"}}
+                    <input type="number" min="0" step="0.01" inputMode="decimal"
+                      style={{width:"100%",padding:"13px 36px 13px 14px",borderRadius:9,border:`1px solid ${amt>0?(method?.color||"#f0c987"):"rgba(255,255,255,0.1)"}`,background:"rgba(255,255,255,0.05)",color:"#f8fafc",fontSize:isMobile?28:24,fontWeight:900,outline:"none",boxSizing:"border-box",transition:"border-color 0.2s"}}
                       value={line.amount} onChange={e=>updateLine(line.id,"amount",e.target.value)} placeholder="0,00"/>
                     <span style={{position:"absolute",right:12,color:"#64748b",fontSize:15,pointerEvents:"none"}}>€</span>
                   </div>
-                  <button style={{padding:"9px 14px",borderRadius:9,border:`1px solid ${method?.color}`,background:"transparent",color:method?.color,fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}} onClick={()=>setExact(line.id)}>Solde</button>
+                  <button style={{padding:"11px 16px",borderRadius:9,border:`1px solid ${method?.color}`,background:"transparent",color:method?.color,fontSize:14,fontWeight:700,cursor:"pointer",flexShrink:0}} onClick={()=>setExact(line.id)}>Solde</button>
                 </div>
-                {line.key==="cash"&&changeDue>0.005 && (
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,padding:"8px 12px",borderRadius:9,background:"rgba(16,185,129,0.1)",border:"1px solid rgba(16,185,129,0.2)"}}>
-                    <span style={{fontSize:13,color:"#10b981",fontWeight:600}}>Monnaie à rendre</span>
-                    <span style={{fontSize:18,fontWeight:900,color:"#10b981"}}>{fmt(changeDue)}</span>
+                {line.key==="cash"&&changeDue>0.005&&(
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,padding:"10px 12px",borderRadius:9,background:"rgba(16,185,129,0.1)",border:"1px solid rgba(16,185,129,0.2)"}}>
+                    <span style={{fontSize:14,color:"#10b981",fontWeight:600}}>Monnaie à rendre</span>
+                    <span style={{fontSize:isMobile?22:18,fontWeight:900,color:"#10b981"}}>{fmt(changeDue)}</span>
                   </div>
                 )}
               </div>
@@ -425,30 +543,78 @@ export default function PageEncaissement({ toast }) {
           })}
         </div>
 
-        {/* Balance */}
         <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:11,padding:"13px 16px",display:"flex",flexDirection:"column",gap:7}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:14}}><span style={{color:"#94a3b8"}}>Total réglé</span><span style={{fontWeight:700}}>{fmt(totalPaid)}</span></div>
           <div style={{height:1,background:"rgba(255,255,255,0.06)"}}/>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:800}}>
             <span>Reste à régler</span>
-            <span style={{fontSize:isMobile?16:18,fontWeight:900,color:remaining>0.005?"#f87171":"#10b981"}}>{remaining>0.005?fmt(remaining):"✓ Soldé"}</span>
+            <span style={{fontSize:18,fontWeight:900,color:remaining>0.005?"#f87171":"#10b981"}}>{remaining>0.005?fmt(remaining):"✓ Soldé"}</span>
           </div>
         </div>
 
-        <button style={{padding:"15px",borderRadius:12,border:"none",background:canPay?"linear-gradient(135deg,#10b981,#059669)":"rgba(255,255,255,0.06)",color:canPay?"#fff":"#334155",fontWeight:900,fontSize:isMobile?15:16,cursor:canPay?"pointer":"not-allowed",boxShadow:canPay?"0 4px 24px rgba(16,185,129,0.35)":"none",transition:"all 0.2s",opacity:submitting?0.7:1}} className="encaisser-btn"
+        <button style={{padding:"16px",borderRadius:12,border:"none",background:canPay?"linear-gradient(135deg,#10b981,#059669)":"rgba(255,255,255,0.06)",color:canPay?"#fff":"#334155",fontWeight:900,fontSize:16,cursor:canPay?"pointer":"not-allowed",boxShadow:canPay?"0 4px 24px rgba(16,185,129,0.35)":"none",transition:"all 0.2s",opacity:submitting?0.7:1}}
           disabled={!canPay||submitting} onClick={handleEncaisser}>
-          {submitting ? <span style={{display:"flex",gap:8,justifyContent:"center",alignItems:"center"}}><Spinner size={18} color="#fff"/> Enregistrement…</span> : "✓ Valider l'encaissement"}
+          {submitting?<span style={{display:"flex",gap:8,justifyContent:"center",alignItems:"center"}}><Spinner size={18} color="#fff"/> Enregistrement…</span>:"✓ Valider l'encaissement"}
         </button>
       </div>
-    </div>
-  );
+    );
+
+    // ── Layout desktop/tablet ──
+    if (!isMobile) return (
+      <div style={{display:"flex",flex:1,height:"calc(100vh - 72px)",overflow:"auto"}}>
+        <div style={{flex:1,padding:"22px 26px",overflowY:"auto",borderRight:"1px solid rgba(255,255,255,0.06)"}}>
+          <button style={{background:"none",border:"1px solid rgba(255,255,255,0.08)",color:"#94a3b8",padding:"8px 14px",borderRadius:9,cursor:"pointer",fontSize:14,marginBottom:18}} onClick={()=>setScreen("caisse")}>← Retour</button>
+          <div style={{fontSize:22,fontWeight:900,marginBottom:18}}>Finaliser la vente</div>
+          {sectionInfos}
+        </div>
+        <div style={{width:isTablet?"320px":"380px",flexShrink:0,padding:"22px 20px",overflowY:"auto",display:"flex",flexDirection:"column",gap:14}}>
+          {sectionPaiement}
+        </div>
+      </div>
+    );
+
+    // ── Layout mobile : onglets ──
+    return (
+      <div style={{display:"flex",flexDirection:"column",flex:1,height:"calc(100vh - 58px)",overflow:"auto"}}>
+        <div style={{padding:"12px 16px 0",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+            <button style={{background:"none",border:"1px solid rgba(255,255,255,0.08)",color:"#94a3b8",padding:"8px 12px",borderRadius:9,cursor:"pointer",fontSize:14,flexShrink:0}} onClick={()=>setScreen("caisse")}>← Retour</button>
+            <div style={{fontSize:16,fontWeight:900,flex:1}}>Finaliser la vente</div>
+            <div style={{fontSize:15,fontWeight:900,color:"#f0c987",flexShrink:0}}>{fmt(total)}</div>
+          </div>
+          <div style={{display:"flex",borderRadius:10,overflow:"hidden",border:"1px solid rgba(255,255,255,0.08)"}}>
+            {[["infos","📋 Infos & Client"],["paiement","💳 Paiement"]].map(([tab,label])=>(
+              <button key={tab} onClick={()=>setMobileTab(tab)}
+                style={{flex:1,padding:"11px 8px",border:"none",background:mobileTab===tab?"rgba(240,201,135,0.12)":"transparent",color:mobileTab===tab?"#f0c987":"#64748b",fontSize:13,fontWeight:mobileTab===tab?700:500,cursor:"pointer",fontFamily:"inherit",transition:"all 0.15s",borderRight:tab==="infos"?"1px solid rgba(255,255,255,0.08)":"none"}}>
+                {label}
+                {tab==="paiement"&&!canPay&&totalPaid>0&&<span style={{marginLeft:4,fontSize:11,color:"#f87171"}}>●</span>}
+                {tab==="paiement"&&canPay&&<span style={{marginLeft:4,fontSize:11,color:"#10b981"}}>✓</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"14px 16px",WebkitOverflowScrolling:"touch"}}>
+          {mobileTab==="infos" ? sectionInfos : sectionPaiement}
+        </div>
+      </div>
+    );
+  }
 
   // ── ÉCRAN SUCCÈS ──────────────────────────────────────────────────────────
   if (screen==="success"&&successData) return (
-    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"radial-gradient(ellipse at center,rgba(16,185,129,0.08) 0%,transparent 70%)"}}>
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:`radial-gradient(ellipse at center,${successData._offline?"rgba(245,158,11,0.08)":"rgba(16,185,129,0.08)"} 0%,transparent 70%)`}}>
+      {netBanner}
       <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:22,padding:isMobile?"32px 22px":"48px 42px",textAlign:"center",maxWidth:420,width:"100%"}} className="success-card">
         <div style={{width:72,height:72,borderRadius:"50%",background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",fontSize:30,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 18px",boxShadow:"0 0 50px rgba(16,185,129,0.4)"}} className="success-icon">✓</div>
-        <div style={{fontSize:isMobile?20:24,fontWeight:900,marginBottom:5}}>Encaissement validé</div>
+        <div style={{fontSize:isMobile?20:24,fontWeight:900,marginBottom:5}}>
+          {successData._offline ? "Vente mise en attente" : "Encaissement validé"}
+        </div>
+        {successData._offline && (
+          <div style={{fontSize:12.5,color:"#f59e0b",marginBottom:10,lineHeight:1.6,maxWidth:320,margin:"0 auto 10px"}}>
+            Elle sera envoyée automatiquement dès que le réseau reviendra. Son numéro
+            de ticket sera attribué à ce moment-là.
+          </div>
+        )}
         <div style={{fontSize:13,color:"#64748b",letterSpacing:"0.1em",marginBottom:24}}>{successData.order_number}</div>
         <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:"16px",marginBottom:22,textAlign:"left"}}>
           {(successData.items||[]).map((item,i)=>(
@@ -480,7 +646,3 @@ export default function PageEncaissement({ toast }) {
 
   return null;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// MODAL & ACTIONS — composants partagés
-// ═══════════════════════════════════════════════════════════════════════════════
